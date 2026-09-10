@@ -1,6 +1,6 @@
 # Amountly security fixes — September 9, 2026
 
-Implemented and verified locally. No production deployment or production database migration was performed.
+Implemented, verified locally, and deployed to https://amountly.app on September 9, 2026. Application release: `f3dc15e`; Vercel deployment: `dpl_8rehhmedXiU3DGntyV7JjZa1aK7w`.
 
 ## Fixed
 
@@ -39,3 +39,14 @@ The database test setup supplies one historical prerequisite: migration 011 assu
 ## Separate functional findings still open
 
 This pass addresses the security vulnerabilities. The earlier review's invoice edit/numbering/atomicity bugs, expiring durable receipt references, tax-calendar deadline, deferred accounting posting, password recovery, and broader mobile/product improvements remain separate work. No production financial records were corrected or backfilled.
+
+## Production release verification
+
+- Resumed database confirmed reachable. Live schema contained migrations 012–017 despite absent history entries; columns, RLS enablement and policy names were checked. Migration 018 matched remote migration 20260426014500 after whitespace normalization. Recorded 012–018 as applied and preserved the remote migration file in source control.
+- Supabase CLI applied 019, 020 and 021 successfully. A subsequent dry run reports the remote database is up to date.
+- Read-only production catalog checks confirmed 20 restrictive financial policies, RLS on ai_usage, both metrics functions running as invoker, and profile/invoice enforcement triggers.
+- Vercel production build and TypeScript checks passed; deployment is READY and aliased to amountly.app. Deployment used a clean archive of commit f3dc15e.
+- Production /login returns 200 with all five configured security headers. Anonymous POST /api/ai returns 401 and Cache-Control: no-store.
+- Production OPENAI_API_KEY is absent. Provider-backed AI verification remains blocked until the key is configured securely in Vercel.
+
+- Live in-app browser QA sign-in succeeded and the authenticated dashboard rendered. The browser logged the expected generic AI-unavailable error because the production provider key is absent.
