@@ -1,4 +1,5 @@
 'use client'
+import { escapeCsvValue } from '@/lib/csv'
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -191,13 +192,6 @@ function getQuarters(year: number): QuarterInfo[] {
     { label: 'Q3', period: `Jun 1 – Aug 31, ${year}`, dueDate: `${year}-09-15` },
     { label: 'Q4', period: `Sep 1 – Dec 31, ${year}`, dueDate: `${year + 1}-01-15` },
   ]
-}
-
-function escapeCsvValue(value: unknown) {
-  const text = value === null || value === undefined ? '' : String(value)
-  return text.includes(',') || text.includes('"') || text.includes('\n')
-    ? `"${text.replace(/"/g, '""')}"`
-    : text
 }
 
 function downloadTaxPacketCsv(rows: TaxPacketRow[], filename: string) {

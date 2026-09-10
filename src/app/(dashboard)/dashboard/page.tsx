@@ -922,9 +922,11 @@ export default function DashboardPage() {
       }
     }
 
-    loadAiInsights()
+    // Avoid consuming a paid request for every keystroke or intermediate data load.
+    const timer = window.setTimeout(loadAiInsights, 750)
 
     return () => {
+      window.clearTimeout(timer)
       isMounted = false
     }
   }, [accountType, financialSearchQuery, personalBills, personalExpenses, workDashboardData])

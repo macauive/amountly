@@ -24,6 +24,8 @@ import { useAppState } from '@/contexts/AppStateContext'
 import { getSupabaseClient } from '@/lib/supabase'
 import { Capability } from '@/types/enums'
 
+import { escapeCsvValue } from '@/lib/csv'
+
 // ─── CSV Export Utility ──────────────────────────────────────
 
 function downloadCSV(rows: Record<string, unknown>[], filename: string) {
@@ -32,15 +34,9 @@ function downloadCSV(rows: Record<string, unknown>[], filename: string) {
     return
   }
   const headers = Object.keys(rows[0])
-  const escape = (val: unknown) => {
-    const str = val === null || val === undefined ? '' : String(val)
-    return str.includes(',') || str.includes('"') || str.includes('\n')
-      ? `"${str.replace(/"/g, '""')}"`
-      : str
-  }
   const csv = [
-    headers.join(','),
-    ...rows.map((row) => headers.map((h) => escape(row[h])).join(',')),
+    headers.map(escapeCsvValue).join(','),
+    ...rows.map((row) => headers.map((h) => escapeCsvValue(row[h])).join(',')),
   ].join('\n')
 
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })

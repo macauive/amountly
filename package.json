@@ -2,11 +2,16 @@
   "name": "amountly-web",
   "version": "0.1.1",
   "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:security": "node --test tests/security.test.cjs",
+    "test:security:db": "node tests/security-db.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
@@ -37,8 +42,8 @@
     "@radix-ui/react-toggle-group": "^1.1.2",
     "@radix-ui/react-tooltip": "^1.1.8",
     "@react-pdf/renderer": "^4.3.2",
-    "@supabase/ssr": "^0.4.0",
-    "@supabase/supabase-js": "^2.45.0",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.116.0",
     "@tanstack/react-query": "^5.51.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -47,7 +52,7 @@
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.487.0",
-    "next": "^16.1.6",
+    "next": "^16.3.4",
     "next-themes": "^0.4.6",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
