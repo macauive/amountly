@@ -1,5 +1,7 @@
 # Workflow foundation: implementation and release notes
 
+This file retains historical checkpoint evidence. For the current release gates, migration sequence, mobile compatibility and recovery decisions, use [release-runbook.md](release-runbook.md) and [workflow-expansion.md](workflow-expansion.md).
+
 This is the first implementation of the recommended sequence: security and preservation, then the complete invoice-to-payment journey, followed by supporting navigation and dashboard improvements. The live app and production database have not been changed. The isolated test services were stopped after verification; synthetic data is retained in local Supabase volumes for a future test run.
 
 ## Ownership and permission decisions
