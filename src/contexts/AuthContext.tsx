@@ -1,8 +1,9 @@
 'use client'
 
-import React, { createContext, useContext, useEffect, useState } from 'react'
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { Session, User as SupabaseUser } from '@supabase/supabase-js'
 import { getSupabaseClient } from '@/lib/supabase'
+import { ensureOwnProfile } from '@/services/profile.service'
 import type { User, Organization } from '@/types/models'
 import { AccountType, Role } from '@/types/enums'
 
@@ -41,21 +42,6 @@ function mapUser(data: Record<string, unknown>): User {
   } as User
 }
 
-function getAccountTypeFromMetadata(supabaseUser: SupabaseUser): AccountType | undefined {
-  const candidates = [
-    supabaseUser.user_metadata?.account_type,
-    supabaseUser.app_metadata?.account_type,
-  ]
-
-  for (const candidate of candidates) {
-    if (candidate === AccountType.personal || candidate === AccountType.freelancer || candidate === AccountType.business) {
-      return candidate
-    }
-  }
-
-  return undefined
-}
-
 function getRecoveryPath(user: User | null): string | null {
   if (!user?.account_type) {
     return '/account-type'
@@ -82,6 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   })
 
   const supabase = getSupabaseClient()
+  const authRevision = useRef(0)
 
   const fetchUserProfile = async (userId: string): Promise<User | null> => {
     const { data, error } = await supabase
@@ -91,48 +78,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .maybeSingle()
 
     if (error) {
-      console.error('Error fetching user profile:', error)
-      return null
+      throw new Error('Could not load your profile. Please try again.')
     }
 
     return data ? mapUser(data as Record<string, unknown>) : null
-  }
-
-  const repairUserProfile = async (supabaseUser: SupabaseUser): Promise<User | null> => {
-    const existingUser = await fetchUserProfile(supabaseUser.id)
-    const accountTypeFromMetadata = getAccountTypeFromMetadata(supabaseUser)
-
-    if (existingUser?.account_type || !accountTypeFromMetadata) {
-      return existingUser
-    }
-
-    const repairPayload = {
-      id: supabaseUser.id,
-      email: supabaseUser.email ?? '',
-      name:
-        (typeof supabaseUser.user_metadata?.name === 'string' && supabaseUser.user_metadata.name.trim()) ||
-        (typeof supabaseUser.user_metadata?.full_name === 'string' && supabaseUser.user_metadata.full_name.trim()) ||
-        (supabaseUser.email?.split('@')[0] ?? 'New User'),
-      role: existingUser?.role ?? Role.owner,
-      account_type: accountTypeFromMetadata,
-      organization_id:
-        typeof supabaseUser.user_metadata?.organization_id === 'string'
-          ? supabaseUser.user_metadata.organization_id
-          : existingUser?.organization_id,
-    }
-
-    const { data, error } = await supabase
-      .from('users')
-      .upsert(repairPayload, { onConflict: 'id' })
-      .select('*')
-      .single()
-
-    if (error) {
-      console.error('Error repairing user profile:', error)
-      return existingUser
-    }
-
-    return mapUser(data as Record<string, unknown>)
   }
 
   const fetchOrganization = async (organizationId: string): Promise<Organization | null> => {
@@ -143,7 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .single()
 
     if (error || !data) {
-      console.error('Error fetching organization:', error)
+      // Organization access can change while a session is open.
       return null
     }
 
@@ -151,6 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const bootstrapAuthState = async (session: Session | null) => {
+    const revision = ++authRevision.current
     try {
       if (!session?.user) {
         setState({
@@ -167,7 +117,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return
       }
 
-      const user = await repairUserProfile(session.user)
+      const user = await fetchUserProfile(session.user.id)
+      if (revision !== authRevision.current) return
       if (user && !user.is_active) {
         await supabase.auth.signOut({ scope: 'local' })
         setState({ session: null, supabaseUser: null, user: null, organization: null,
@@ -181,6 +132,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         organization = await fetchOrganization(user.organization_id)
       }
 
+      if (revision !== authRevision.current) return
       const recoveryPath = getRecoveryPath(user)
 
       setState({
@@ -195,7 +147,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         error: user ? null : 'We could not finish loading your profile.',
       })
     } catch (error) {
-      console.error('Error bootstrapping auth state:', error)
+      if (revision !== authRevision.current) return
+      // Show a safe recovery message without logging profile or provider details.
       setState({
         session,
         supabaseUser: session?.user ?? null,
@@ -211,14 +164,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
+    let active = true
+    let pending: ReturnType<typeof setTimeout> | undefined
+    const initialRevision = authRevision.current
     void supabase.auth.getSession().then(({ data: { session } }) => {
-      void bootstrapAuthState(session)
+      if (active && authRevision.current === initialRevision) void bootstrapAuthState(session)
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
-        if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'USER_UPDATED') {
-          void bootstrapAuthState(session)
+        authRevision.current++
+        if (pending) clearTimeout(pending)
+        if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'USER_UPDATED' || event === 'PASSWORD_RECOVERY' || event === 'MFA_CHALLENGE_VERIFIED') {
+          pending = setTimeout(() => { if (active) void bootstrapAuthState(session) }, 0)
         } else if (event === 'SIGNED_OUT') {
           setState({
             session: null,
@@ -232,12 +190,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             error: null,
           })
         } else if (event === 'TOKEN_REFRESHED' && session) {
-          void bootstrapAuthState(session)
+          pending = setTimeout(() => { if (active) void bootstrapAuthState(session) }, 0)
         }
       }
     )
 
-    return () => subscription.unsubscribe()
+    return () => { active = false; authRevision.current++; if (pending) clearTimeout(pending); subscription.unsubscribe() }
   }, [])
 
   const getPostAuthPath = (user: User | null) => getRecoveryPath(user) ?? '/dashboard'
@@ -339,6 +297,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const logout = async () => {
+    authRevision.current++
     setState(prev => ({ ...prev, isLoading: true }))
     await supabase.auth.signOut()
     setState({
@@ -357,6 +316,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const setAccountType = async (accountType: AccountType) => {
     if (!state.supabaseUser) {
       return { error: 'Not authenticated' }
+    }
+
+    try {
+      await ensureOwnProfile(state.supabaseUser, accountType)
+    } catch {
+      return { error: 'Could not finish setting up your profile. Please try again.' }
     }
 
     const { error } = await supabase.rpc('set_own_account_type', {

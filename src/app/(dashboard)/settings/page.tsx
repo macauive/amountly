@@ -1,5 +1,6 @@
 'use client'
 
+import { getExportRows } from '@/services/exports.service'
 import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { User, Building2, Bell, Download, Lock } from 'lucide-react'
@@ -294,13 +295,7 @@ export default function SettingsPage() {
   const handleExport = async (table: string, filename: string) => {
     setExporting(table)
     try {
-      const rows: Record<string, unknown>[] = []
-      for (let offset = 0; ; offset += 500) {
-        const { data, error } = await supabase.from(table).select('*').order('id').range(offset, offset + 499)
-        if (error) throw new Error('Export failed')
-        rows.push(...((data || []) as Record<string, unknown>[]).map(({ receipt_url, receipt_path, issued_snapshot, ...row }) => row))
-        if (!data || data.length < 500) break
-      }
+      const rows = await getExportRows(table)
       downloadCSV(rows, filename)
       toast.success(`Exported ${rows.length} record${rows.length !== 1 ? 's' : ''}`)
     } catch (err) {

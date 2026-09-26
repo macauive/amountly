@@ -349,27 +349,9 @@ export default function InvoicesPage() {
     }
   }
 
-  const handleDownloadPdf = async (invoice: Invoice) => {
-    setLoadingPdf(invoice.id)
-    try {
-      const full = await getInvoice(invoice.id)
-      if (!full) return
-      const { pdf } = await import('@react-pdf/renderer')
-      const { InvoicePDF } = await import('@/components/InvoicePDF')
-      const blob = await pdf(<InvoicePDF invoice={full} organization={organization} />).toBlob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `invoice-${invoice.invoice_number}.pdf`
-      a.click()
-      URL.revokeObjectURL(url)
-      toast.success('PDF downloaded')
-    } catch {
-      toast.error('Failed to generate PDF')
-    } finally {
-      setLoadingPdf(null)
-    }
-  }
+  // Preparing a document opens a stable download link. A detached anchor whose
+  // URL is immediately revoked can lose the download in embedded browsers.
+  const handleDownloadPdf = openPdfPreview
 
   const openReminderDraft = async (invoice: Invoice) => {
     setReminderInvoice(invoice)

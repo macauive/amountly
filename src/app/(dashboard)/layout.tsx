@@ -66,7 +66,7 @@ export default function DashboardLayout({
   children: React.ReactNode
 }) {
   const router = useRouter()
-  const pathname = usePathname()
+  const pathname = usePathname() ?? ''
   const { logout, user, isLoading, isAuthenticated, isProfileReady, recoveryPath, session } = useAuth()
   const { visibleTabs, organization } = useAppState()
   const { theme, setTheme } = useTheme()

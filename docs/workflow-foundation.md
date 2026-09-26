@@ -51,19 +51,55 @@ Invoice and payment reads, and CSV exports, paginate past the default row limit.
 ### Additional pre-release checks (September 25, 2026)
 
 - Re-ran TypeScript, production build, 11 security unit tests, and the fresh-install database suite successfully. `npm run lint` currently runs TypeScript only; it is not an ESLint check.
-- Added `node tests/security-db.cjs --upgrade`: seed the old schema before applying the two workflow migrations, compare every pre-existing column across eight tables, preserve a legacy paid invoice and invalid historical work records, verify no payments/events are fabricated, and then run the full authorization/concurrency suite. This passes with synthetic data; it does not replace a staging rehearsal with representative production data or a restore drill.
+- Added `node tests/security-db.cjs --upgrade`: seed the old schema before applying the workflow migrations, compare every pre-existing column across eight tables, preserve a legacy paid invoice and invalid historical work records, verify no payments/events are fabricated, and then run the full authorization/concurrency suite. This passes with synthetic data; it does not replace a staging rehearsal with representative production data or a restore drill.
 - Diagnosed the earlier screenshot's Next.js issue: a dashboard AI request logged an error after the origin guard rejected `127.0.0.1` because Next reconstructed the request URL as `localhost`. Optional AI failures no longer create a console-error overlay. The origin guard now accepts equivalent HTTP loopback hosts on the same port only in development. Regression tests reject foreign hosts, different ports, malformed origins and spoofed forwarded headers, and preserve strict production behavior. Local HTTP probes now reach authentication (401 with a deliberately invalid token) instead of incorrectly returning 403. The signed-in dashboard now receives the expected 503 with the local AI provider disabled, renders its fallback, and shows no console errors or Next.js issue badge.
 - PDF preview remains blank in the in-app browser. Its iframe does contain a generated 3,934-byte `%PDF-1.3` blob, so generation and display are separate issues. The browser download event did not complete within 15 seconds. A missing dialog description also produces an accessibility warning. Do not treat either PDF display or download as verified; investigate browser support and independently validate the actual document content.
 
-Before calling this release ready, complete:
+### Follow-up implementation and local-only release checks
 
-1. Fix or account for the PDF preview/download failure, inspect exported invoice values (including partial payments, currencies and issued client snapshots), and remove the dialog accessibility warning.
-2. Rehearse a representative database upgrade and recovery on staging; inventory other clients and use a coordinated app/database rollout because old direct invoice writes become invalid.
-3. Smoke-test the production build on the actual preview hostname, including valid authentication, allowed AI requests, provider failures and cross-origin rejection. Live provider generation has not been tested locally.
-4. Exercise new-account onboarding, role changes, disabled/expired sessions, and two browser sessions editing or recording payments, including response loss and retry. Database concurrency tests pass but do not establish UI recovery behavior.
-5. Exercise receipt upload/access/expiry and cross-workspace denial through real Storage APIs, plus exports and invoice lists with more than 1,000 records. Verify completeness and that receipt credentials are absent.
+The foundation was committed as `1eaf945`. The user requested local testing only; no hosted staging branch, preview deployment, production data copy, or live database change was created for these follow-ups.
 
-The two new timestamped migrations and the web application must be released together in a controlled window. The old client uses direct invoice writes that these migrations intentionally reject; the new client requires the new columns/tables/RPCs. Do not deploy either half independently and assume compatibility. Inventory other clients, including any iOS build, before release.
+Confirmed defects fixed after that checkpoint:
+
+- Stale invoice edits used SQLSTATE `40001`, which the local PostgREST server repeatedly retried until the gateway timed out. The new conflict migration changes only the two explicit optimistic-version exceptions to `PT409`. Real API tests now receive an immediate conflict and a reload message. [Supabase documents this retry behavior](https://supabase.com/docs/guides/troubleshooting/high-cpu-and-infinite-transaction-retries-when-using-custom-error-codes-in-rpc-functions-77326b).
+- Fresh authenticated accounts could reach account-type selection without a public profile, then fail the account-type RPC. Profile creation now happens when the user chooses an account type, using their authenticated identity and ordinary RLS. It starts with MEMBER/no organization, ignores role/membership metadata, handles concurrent creation without overwriting existing profiles, and joins only an organization the user owns.
+- Authentication callbacks defer asynchronous work outside the callback and discard old profile responses after sign-out. Focused tests cover a delayed profile result after sign-out and sign-in immediately followed by sign-out.
+- The invoice dialog now provides an accessible HTML document review and a normal authenticated PDF download. The Node API endpoint uses cookie authentication, RLS, UUID validation, bounded invoice content, sanitized filenames, and private/no-store responses. A Pages API endpoint keeps the PDF renderer on its installed React runtime; the App Router's separately bundled React runtime was incompatible with this renderer. No dependency upgrade or security-header relaxation was needed.
+- PDFs include payments recorded and balance due, correct paid-status styling, and timezone-independent calendar dates. Historical paid invoices explicitly state when payment details are unavailable. Issued client data no longer inherits changed live client fields that were absent from the snapshot. Old snapshots that captured only name/email/address do not invent the missing address fields.
+- Export fetching is extracted into a service used by the Settings UI so the integration test executes the same pagination/redaction logic as the app.
+
+Verified locally:
+
+- `npm run lint`, `npm run test:security` (11 tests), `npm run test:auth` (6 tests), `npm run test:pdf` (5 tests), `npm run test:security:db`, `npm run test:upgrade`, and the optimized build.
+- The final pre-commit coverage pass added eight focused tests: profile setup ignores forged identity/role/workspace metadata, preserves existing disabled profiles, fails closed on lookup/validation errors, and recovers concurrent creation without an upsert; PDF requests reject unsupported methods, malformed identifiers, expired sessions, and oversized legacy records, and return sanitized failures for database/rendering errors. These endpoint failure tests use dependency substitutes; the real local API authorization/download checks above remain separate evidence. All 22 unit/document tests, TypeScript, fresh-install database tests, and upgrade/restore tests passed again. Only tests and these notes changed in this pass, so the previously successful optimized build and browser checks were not repeated.
+- Upgrade rehearsal now saves a pre-upgrade PostgreSQL dump, restores it into a separate disposable recovery database, and compares all historical fixture columns across eight tables. This proves the synthetic recovery procedure, not production backup availability.
+- Real local Auth/API tests onboard business, freelancer and personal accounts, reject foreign organization joining, test two authenticated sessions for stale edits/concurrent payments, and retry a payment after deliberately discarding its successful response. Disabled users, role changes, and expired tokens are denied through the real API.
+- The actual application services retrieve 1,005 invoices and payments despite the 1,000-row API limit, compute all partial balances, export every row, exclude receipt paths/URLs and issued snapshots, and exclude another workspace's records.
+- Real Storage upload and signed downloads work. Foreign-workspace signing/uploads, unsupported types, oversize files, and untrusted legacy URL origins are rejected. The application's 60-second signed link expires and a fresh authorized link opens.
+- The PDF endpoint renders valid PDF bytes with private/no-store attachment headers; anonymous, malformed, foreign-workspace, and disabled-account requests fail. The in-app browser successfully downloaded the PDF in development and production mode. Its extracted text and rendered page were inspected independently. A 60-line multi-page PDF test also checks currencies, partial balance, issued identity, and legacy payment messaging.
+- Production-mode browser sign-in and a new synthetic $10 draft -> issue -> payment flow pass. A fresh production browser tab shows no console warnings/errors. The document dialog fits a 390px viewport without page overflow.
+- Local production-mode AI requests on `http://localhost:4174` reach the deliberately disabled-provider fallback (503); foreign origins are rejected (403). This validates authentication/origin/fallback handling, not paid provider generation. The production origin guard is intentionally strict: the `127.0.0.1` alias is not treated as `localhost` outside development.
+
+Repeatable local setup (requires the isolated Supabase CLI stack, Node, PostgreSQL tools, and Poppler):
+
+```sh
+node tests/local-app.cjs build
+node tests/local-app.cjs start
+# In another terminal:
+npm run test:release:local
+```
+
+Both build and start must receive the local public Supabase configuration because Next embeds public variables at build time. The helper obtains local CLI status without printing credentials, refuses a non-loopback Supabase URL, and disables the AI provider. The integration script also refuses non-local endpoints. It creates synthetic fixture accounts/records in the local stack and retains them for inspection; it never loads production `.env` configuration. Stop only this project's stack after testing and retain its volumes. The conflict migration was applied to the existing local database using SQL for iterative tests; disposable suites always apply all migration files from scratch.
+
+Still required before production rollout:
+
+1. Hosted staging upgrade/recovery with representative data, actual preview-hostname checks, verified production recovery point, migration-history reconciliation, and inventory of older clients (including iOS). Deferred by the user's local-only choice.
+2. Live AI provider success/failure verification with explicitly configured test credentials. No provider requests were sent by the local tests.
+3. Browser-level payment response-loss/connection-loss testing. Attempted browser offline emulation did not interrupt the cross-origin API request, so it is not counted as a successful fault-injection test. API-level retry/idempotency and concurrency checks do pass.
+4. Full email-verification delivery/new-signup UI and forced-expiry UI recovery on the intended hosted auth configuration. Local Auth/RLS onboarding, expired-token rejection, and auth race tests are verified; hosted delivery/redirect behavior is not.
+
+
+The three new timestamped migrations (foundation, invoice workflow, and conflict response) and the web application must be released together in a controlled window. The old client uses direct invoice writes that these migrations intentionally reject; the new client requires the new columns/tables/RPCs. Do not deploy either half independently and assume compatibility. Inventory other clients, including any iOS build, before release.
 
 Before production rollout: verify live migration history, take/verify the database recovery point, inventory malformed legacy invoices and work records, confirm private-schema API exclusion, and rehearse the migration against a staging copy. Migration 011 now declares the historically missing owner_id prerequisite so a fresh local database no longer requires a test-only patch. Already applied migration history is not rewritten.
 

@@ -224,13 +224,14 @@ test('invoice records preserve issued states, partial balances, currency and iss
     assert.equal(normalizeInvoiceStatus(state.toLowerCase()),state)
   }
   const invoice = mapInvoice({ id:'synthetic',status:'SENT',total:300,currency:'EUR',due_date:'2099-01-01',
-    client:{name:'Changed name'},issued_snapshot:{client:{name:'Original name'}},
+    client:{name:'Changed name',city:'Changed city'},issued_snapshot:{client:{name:'Original name'}},
     payments:[{amount:'100.00'}] })
   assert.equal(invoice.status,'SENT')
   assert.equal(invoice.balance_due,200)
   assert.equal(invoice.amount_paid,100)
   assert.equal(invoice.currency,'EUR')
   assert.equal(invoice.client.name,'Original name')
+  assert.equal(invoice.client.city,undefined)
   assert.equal(mapInvoice({status:'SENT',total:100,due_date:'2000-01-01'}).status,'OVERDUE')
   assert.equal(mapInvoice({status:'PAID',total:100}).balance_due,0)
   assert.equal(mapInvoice({status:'CANCELLED',total:100}).balance_due,0)

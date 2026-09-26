@@ -93,6 +93,8 @@ async function main() {
         const query = `select coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) from (select ${columns} from public.${table} order by id) t`
         return { table, query, before: sql(query) }
       })
+      const backup = path.join(root, 'before-upgrade.dump')
+      execFileSync(path.join(bin, 'pg_dump'), ['-h', socket, '-U', 'amountly_test', '-d', 'postgres', '-Fc', '-f', backup], { stdio: 'pipe' })
       for (const name of workflowMigrations) sql(fs.readFileSync(path.join('supabase/migrations', name), 'utf8'))
       for (const snapshot of snapshots) assert.equal(sql(snapshot.query), snapshot.before, `${snapshot.table}: upgrade changed historical values`)
       assert.equal(sql('select count(*) from invoice_payments'), '0')
@@ -100,6 +102,13 @@ async function main() {
       assert.equal(asUser(1, `select status from invoices where id='${id(410)}'`), 'PAID')
       assert.equal(asUser(5, `select count(*) from invoices where id='${id(410)}'`), '0')
       denied(() => asUser(3, `update expenses set amount=-6 where id='${id(710)}'`), '23514')
+      sql('create database recovery')
+      execFileSync(path.join(bin, 'pg_restore'), ['-h', socket, '-U', 'amountly_test', '-d', 'recovery', '--exit-on-error', backup], { stdio: 'pipe' })
+      for (const snapshot of snapshots) {
+        const restored = execFileSync(path.join(bin, 'psql'), [...psqlArgs.slice(0,-1), 'recovery', '-c', snapshot.query], { encoding: 'utf8', stdio: 'pipe' }).trim()
+        assert.equal(restored, snapshot.before, `${snapshot.table}: recovery changed historical values`)
+      }
+      console.log('PASS: pre-upgrade dump restores schema and all fixture values into a separate recovery database')
       console.log('PASS: upgrade preserves historical rows, paid invoices and anomalies without inventing payments; new constraints and isolation apply')
     }
 
@@ -164,7 +173,7 @@ async function main() {
     assert.equal(asUser(1,`select total from invoices where id='${id(500)}'`),'220.00')
     asUser(1,save(500,payload,[{description:'Updated',quantity:1,rate:200}],version(500)),true)
     assert.equal(asUser(1,`select count(*) from invoice_line_items where invoice_id='${id(500)}'`),'1')
-    denied(() => asUser(1,save(500,payload,lines,"'2000-01-01'::timestamptz")), '40001')
+    denied(() => asUser(1,save(500,payload,lines,"'2000-01-01'::timestamptz")), 'PT409')
     denied(() => asUser(5,save(500)), '42501')
     asUser(4,action(500,'issue'),true)
     denied(() => asUser(1,save(500,payload,lines,version(500))), '22023')

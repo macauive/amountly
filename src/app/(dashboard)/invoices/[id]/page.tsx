@@ -23,7 +23,7 @@ const eventLabels: Record<string, string> = {
 }
 
 export default function InvoiceDetailPage() {
-  const { id } = useParams<{ id: string }>()
+  const { id = '' } = useParams<{ id: string }>() ?? {}
   const [invoice, setInvoice] = useState<Invoice | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)

@@ -5,11 +5,11 @@ import {
   View,
   Text,
   StyleSheet,
-  Font,
 } from '@react-pdf/renderer'
 import type { Invoice } from '@/types/models'
 import type { Organization } from '@/types/models'
 import { invoiceStatusLabels } from '@/types/enums'
+import { formatInvoiceDate as formatDate, formatInvoiceMoney as formatCurrency, invoicePaymentSummary } from '@/lib/invoice-document'
 
 // ─── Styles ──────────────────────────────────────────────────
 
@@ -246,16 +246,8 @@ const styles = StyleSheet.create({
 
 // ─── Helpers ─────────────────────────────────────────────────
 
-function formatCurrency(amount: number, currency = 'USD') {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount)
-}
-
-function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-}
-
 function getStatusColors(status: string): { bg: string; color: string } {
-  switch (status) {
+  switch (status.toLowerCase()) {
     case 'paid': return { bg: '#dcfce7', color: '#16a34a' }
     case 'overdue': return { bg: '#fee2e2', color: '#dc2626' }
     case 'sent': return { bg: '#dbeafe', color: '#2563eb' }
@@ -268,10 +260,11 @@ function getStatusColors(status: string): { bg: string; color: string } {
 
 interface InvoicePDFProps {
   invoice: Invoice
-  organization?: Organization | null
+  organization?: Pick<Organization, 'name' | 'email' | 'address' | 'city' | 'state' | 'zip_code'> | null
 }
 
 export function InvoicePDF({ invoice, organization }: InvoicePDFProps) {
+  const summary = invoicePaymentSummary(invoice)
   const statusColors = getStatusColors(invoice.status)
   const lineItems = invoice.line_items || []
 
@@ -395,6 +388,9 @@ export function InvoicePDF({ invoice, organization }: InvoicePDFProps) {
               <Text style={styles.totalLabel}>Total</Text>
               <Text style={styles.totalValue}>{formatCurrency(invoice.total, invoice.currency)}</Text>
             </View>
+            {!summary.legacyPaid && <View style={styles.totalsRow}><Text style={styles.totalsLabel}>Payments recorded</Text><Text style={styles.totalsValue}>{summary.paid}</Text></View>}
+            <View style={styles.totalRow}><Text style={styles.totalLabel}>Balance due</Text><Text style={styles.totalValue}>{summary.balance}</Text></View>
+            {summary.legacyPaid && <Text style={styles.notesText}>Marked paid in historical records. Payment details are unavailable.</Text>}
           </View>
         </View>
 

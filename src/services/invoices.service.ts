@@ -69,7 +69,7 @@ async function getAllPayments(invoiceId?: string): Promise<InvoicePayment[]> {
 
 function workflowError(code?: string): Error & { code?: string } {
   const messages: Record<string, string> = {
-    '40001': 'This invoice changed in another window. Reload it before saving.',
+    'PT409': 'This invoice changed in another window. Reload it before saving.',
     '23505': 'That invoice number or request already exists. Reload before retrying.',
     '42501': 'You do not have permission to make this change.',
     '22023': 'Check the invoice state, dates, amounts, and outstanding balance before retrying.',

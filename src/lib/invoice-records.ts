@@ -86,9 +86,8 @@ export function mapInvoice(row: unknown): Invoice {
     paid_at: typeof invoice.paid_at === 'string' ? invoice.paid_at : undefined,
     created_at: String(invoice.created_at ?? ''),
     updated_at: String(invoice.updated_at ?? ''),
-    client: snapshot?.client ? { ...(invoice.client as Invoice['client']), ...snapshot.client } as Invoice['client'] : invoice.client as Invoice['client'],
+    client: snapshot?.client ? snapshot.client as Invoice['client'] : invoice.client as Invoice['client'],
     project: invoice.project as Invoice['project'],
     line_items: Array.isArray(invoice.line_items) ? invoice.line_items.map(mapInvoiceLineItem) : undefined,
   }
 }
-

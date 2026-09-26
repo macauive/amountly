@@ -11,7 +11,11 @@
     "start": "next start",
     "lint": "tsc --noEmit",
     "test:security": "node --test tests/security.test.cjs",
-    "test:security:db": "node tests/security-db.cjs"
+    "test:security:db": "node tests/security-db.cjs",
+    "test:pdf": "node --test tests/pdf.test.cjs",
+    "test:upgrade": "node tests/security-db.cjs --upgrade",
+    "test:release:local": "node tests/release-local.cjs",
+    "test:auth": "node --test tests/auth.test.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

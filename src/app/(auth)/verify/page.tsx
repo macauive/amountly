@@ -31,11 +31,11 @@ function VerifyPageContent() {
   const [isResending, setIsResending] = useState(false)
   const [isAutoVerifying, setIsAutoVerifying] = useState(false)
 
-  const tokenHash = searchParams.get('token_hash')
-  const verificationType = useMemo(() => getVerificationType(searchParams.get('type')), [searchParams])
+  const tokenHash = searchParams?.get('token_hash')
+  const verificationType = useMemo(() => getVerificationType(searchParams?.get('type') ?? null), [searchParams])
 
   useEffect(() => {
-    const emailFromQuery = searchParams.get('email')
+    const emailFromQuery = searchParams?.get('email')
     const storedEmail = typeof window !== 'undefined'
       ? window.sessionStorage.getItem('pendingVerificationEmail')
       : null
