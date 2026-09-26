@@ -135,6 +135,10 @@ async function main() {
     if (upgrade) {
       // Rehearse installing the release over records written by the old schema.
       // Keep legacy PAID status and anomalies; never fabricate cash receipts.
+      // The older hosted schema lacks this FK. Model that schema only inside
+      // this disposable fixture so its backup remains faithfully restorable.
+      sql(`alter table organizations drop constraint organizations_owner_id_fkey;
+        insert into organizations(id,name,owner_id) values('${id(988)}','Legacy orphan owner','${id(989)}');`)
       sql(`
         insert into invoices(id,organization_id,client_id,invoice_number,issue_date,due_date,subtotal,total,status,paid_at)
           values ('${id(410)}','${id(100)}','${id(200)}','INV-0042','2025-01-01','2025-02-01',50,50,'PAID','2025-01-15');
@@ -165,6 +169,10 @@ async function main() {
       execFileSync(path.join(bin, 'pg_dump'), ['-h', socket, '-U', 'amountly_test', '-d', 'postgres', '-Fc', '-f', backup], { stdio: 'pipe' })
       for (const name of workflowMigrations) sql(fs.readFileSync(path.join('supabase/migrations', name), 'utf8'))
       for (const snapshot of snapshots) assert.equal(sql(snapshot.query), snapshot.before, `${snapshot.table}: upgrade changed historical values`)
+      assert.equal(sql(`select owner_id from organizations where id='${id(988)}'`),id(989))
+      assert.equal(sql(`select owner_id is null from workspaces where id='${id(988)}'`),'t')
+      assert.equal(sql(`select count(*) from workspace_memberships where workspace_id='${id(988)}'`),'0')
+      assert.equal(asUser(1,`select count(*) from workspaces where id='${id(988)}'`),'0')
       assert.equal(sql('select count(*) from invoice_payments'), '0')
       assert.equal(sql('select count(*) from invoice_events'), '0')
       assert.equal(asUser(1, `select status from invoices where id='${id(410)}'`), 'PAID')

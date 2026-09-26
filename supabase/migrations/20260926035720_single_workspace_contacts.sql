@@ -24,7 +24,10 @@ create policy "Read own membership" on public.workspace_memberships for select t
 create policy "Read active workspace" on public.workspaces for select to authenticated
 using(exists(select 1 from public.workspace_memberships m where m.workspace_id=id and m.user_id=auth.uid() and m.is_active));
 insert into public.workspaces(id,organization_id,owner_id,kind)
-  select id,id,owner_id,'business' from public.organizations;
+  -- Some legacy organizations retain an owner ID whose Auth user was deleted.
+  -- Preserve that source value; do not invent an owner or block other workspaces.
+  select o.id,o.id,a.id,'business' from public.organizations o
+  left join auth.users a on a.id=o.owner_id;
 insert into public.workspaces(id,owner_id,kind)
   select id,id,'individual' from public.users where account_type in ('personal','freelancer');
 insert into public.workspace_memberships(user_id,workspace_id,role,is_active)

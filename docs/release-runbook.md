@@ -1,12 +1,12 @@
 # Workflow release and recovery plan
 
-Prepared September 26, 2026. **Not executed.** Local-only testing remains in effect. The user confirmed that pushing deploys to production. The current workflow baseline is `c9e04b8`; the subsequent authenticated CSV-download change must be reviewed/tested and assigned its own release commit before rollout. Do not push a preparation commit or assume a feature-branch preview uses an isolated database.
+Prepared September 26, 2026. The user has now authorized verification and deployment, including a Git push that deploys production. The workflow and CSV baseline is `a81c673`, followed by the tested legacy-owner backfill fix. Read-only hosted inspection and a protected backup/isolated restore rehearsal are complete; this runbook alone does not record a completed cutover. See [release inspection](../ops/README.md) for execution evidence. Do not assume a feature-branch preview uses an isolated database.
 
 This runbook supersedes the older checkpoint-specific release lists in `workflow-foundation.md`. See [current implementation evidence](workflow-expansion.md) and [the mobile compatibility findings](client-compatibility.md).
 
-## Current release decision: hold
+## Release gates
 
-Local checks cover the web workflow, authorization, database upgrade/restore, concurrency and response-loss recovery. They do not establish production migration history, backup availability, installed client compatibility or hosted configuration. The checked-out iOS client has confirmed incompatible invoice/payment paths and unsafe export behavior. No production rollout is authorized or ready on that evidence alone.
+Local checks cover the web workflow, authorization, database upgrade/restore, concurrency and response-loss recovery. The subsequent hosted-backup rehearsal verifies the pending migrations against current records. The checked-out iOS client still has incompatible invoice/payment paths and unsafe export behavior; the user confirmed it is only used for their development/testing. Production migration, deployment and final smoke checks must still be verified as separate steps.
 
 ## 1. Freeze the candidate and record the actual deployment inventory
 
@@ -17,7 +17,7 @@ Local checks cover the web workflow, authorization, database upgrade/restore, co
 
 ## 2. Reconcile the database and inspect historical data
 
-These are future hosted read-only actions after the local-only restriction changes. Confirm the intended project before each command; discover CLI help on that host. Current local CLI help supports `supabase migration list --linked` and `supabase db push --linked --dry-run`. A dry run is a migration inventory, not a data validation or successful rehearsal. No hosted command in this document has been run for this release.
+Confirm the intended project before each command; discover CLI help on that host. Current local CLI help supports `supabase migration list --linked` and `supabase db push --linked --dry-run`. Hosted inspection and dry run confirmed the eleven timestamped migrations are pending. A dry run is a migration inventory, not a data validation or successful rehearsal.
 
 Compare the entire repository migration history with hosted history and live catalog definitions. There are older numbered migrations as well as eleven timestamped workflow migrations. The missing `owner_id` prerequisite was added to historical migration 011 for fresh installations; editing that file does not update an already-migrated database. Investigate any mismatch and prepare a separately reviewed forward migration if needed. Do not blindly use `--include-all`, mark unapplied SQL as applied, replay an applied migration or assume all eleven are pending.
 
