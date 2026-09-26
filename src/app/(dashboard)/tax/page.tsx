@@ -1,5 +1,7 @@
 'use client'
 import { escapeCsvValue } from '@/lib/csv'
+import { useDisplayDate } from '@/hooks/useDisplayDate'
+import { WorkspacePeriodReport } from '@/components/WorkspacePeriodReport'
 import { incomeRecords,expenseRecords,sumMoney,estimateFederalTax,estimateSETax,taxQuarters,supportedTaxYear,taxSources,type IncomeBasis } from '@/lib/reporting'
 
 import { useState, useEffect } from 'react'
@@ -177,6 +179,7 @@ function downloadTaxPacketCsv(rows: TaxPacketRow[], filename: string) {
 // ─── Main Page ────────────────────────────────────────────────
 
 export default function TaxPage() {
+  const displayDate = useDisplayDate()
   const router = useRouter()
   const { user } = useAuth()
   const { hasCapability } = useAppState()
@@ -569,7 +572,7 @@ export default function TaxPage() {
         <div><Label htmlFor="report-year">Tax year</Label><select id="report-year" className="block rounded border bg-background p-2" value={selectedYear} onChange={event=>setSelectedYear(Number(event.target.value))}>{[2026,2025].map(year=><option key={year}>{year}</option>)}</select></div>
         <div><Label htmlFor="report-currency">Currency</Label><select id="report-currency" className="block rounded border bg-background p-2" value={reportCurrency} onChange={event=>setReportCurrency(event.target.value)}>{['USD','EUR','GBP','CAD','AUD'].map(code=><option key={code}>{code}</option>)}</select></div>
         <div><Label htmlFor="report-basis">Income basis</Label><select id="report-basis" className="block rounded border bg-background p-2" value={basis} onChange={event=>setBasis(event.target.value as IncomeBasis)}><option value="cash">Cash received</option><option value="accrual">Accrual: issued invoices</option></select></div>
-        <p className="w-full text-sm text-muted-foreground">Calendar-year records only. Currencies are reported separately without conversion. Filing amounts and U.S. estimates are USD. <a className="underline" href={taxSources.irs} target="_blank" rel="noreferrer">IRS rates</a> · <a className="underline" href={taxSources.ssa} target="_blank" rel="noreferrer">SSA limits</a> · <a className="underline" href={taxSources.deadlines} target="_blank" rel="noreferrer">Federal deadlines</a>. Disaster relief and other exceptions may change deadlines.</p>
+        <p className="w-full text-sm text-muted-foreground">Tax figures use calendar years; Workspace reports also supports your saved fiscal period. Currencies are reported separately without conversion. Filing amounts and U.S. estimates are USD. <a className="underline" href={taxSources.irs} target="_blank" rel="noreferrer">IRS rates</a> · <a className="underline" href={taxSources.ssa} target="_blank" rel="noreferrer">SSA limits</a> · <a className="underline" href={taxSources.deadlines} target="_blank" rel="noreferrer">Federal deadlines</a>. Disaster relief and other exceptions may change deadlines.</p>
       </div>
 
       {/* Summary Cards */}
@@ -760,7 +763,8 @@ export default function TaxPage() {
 
       {/* Main Tabs */}
       <Tabs defaultValue={accountType === AccountType.personal ? 'filings' : 'quarterly'}>
-        <TabsList>
+        <TabsList className="flex-wrap h-auto gap-1">
+          <TabsTrigger value="workspace">Workspace reports</TabsTrigger>
           {accountType !== AccountType.personal && (
             <TabsTrigger value="quarterly" className="gap-2">
               <CalendarClock className="w-4 h-4" />
@@ -784,6 +788,8 @@ export default function TaxPage() {
             </TabsTrigger>
           )}
         </TabsList>
+
+        <TabsContent value="workspace" className="mt-4"><WorkspacePeriodReport invoices={taxInvoices} expenses={allExpenses} currency={reportCurrency} basis={basis} canExport={canExport} /></TabsContent>
 
         {/* ── Quarterly Estimates ── */}
         {accountType !== AccountType.personal && (
@@ -830,7 +836,7 @@ export default function TaxPage() {
                     <CardContent className="space-y-3">
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">Due date</span>
-                        <span className="font-medium">{format(parseISO(quarter.dueDate), 'MMM d, yyyy')}</span>
+                        <span className="font-medium">{displayDate(quarter.dueDate)}</span>
                       </div>
                       {!isFiled && (
                         <div className="flex justify-between text-sm">
@@ -1010,12 +1016,12 @@ export default function TaxPage() {
                           </TableCell>
                           <TableCell className="text-sm text-muted-foreground">
                             {filing.tax_period_start && filing.tax_period_end
-                              ? `${format(parseISO(filing.tax_period_start), 'MMM d')} – ${format(parseISO(filing.tax_period_end), 'MMM d, yyyy')}`
+                              ? `${format(parseISO(filing.tax_period_start), 'MMM d')} – ${displayDate(filing.tax_period_end)}`
                               : '—'}
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-col">
-                              <span>{format(parseISO(filing.due_date), 'MMM d, yyyy')}</span>
+                              <span>{displayDate(filing.due_date)}</span>
                               {dueBadge && (
                                 <Badge variant={dueBadge.variant} className="text-xs w-fit mt-0.5">
                                   {dueBadge.label}

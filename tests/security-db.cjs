@@ -19,6 +19,8 @@ const asUserSql = (n, statement, commit = false) => `begin; set local role authe
 const asUser = (n, statement, commit) => sql(asUserSql(n, statement, commit))
 const denied = (fn, code = '42501') => assert.throws(fn, error => String(error.stderr).includes(code))
 const upgrade = process.argv.includes('--upgrade')
+const incrementalUpgrade = process.argv.includes('--incremental-upgrade')
+assert.ok(!(upgrade && incrementalUpgrade), 'Choose one upgrade mode')
 let started = false
 
 async function main() {
@@ -41,7 +43,11 @@ async function main() {
     `)
     const migrations = fs.readdirSync('supabase/migrations').filter(name => name.endsWith('.sql')).sort()
     const workflowMigrations = migrations.filter(name => name.startsWith('20260926'))
-    for (const name of migrations.filter(name => !upgrade || !workflowMigrations.includes(name))) {
+    // fcddc0f contains the first eight workflow migrations. Rehearse only the
+    // three subsequent migrations against real data created by those commands.
+    const incrementalMigrations = workflowMigrations.filter(name => name >= '20260926044850')
+    const pendingMigrations = incrementalUpgrade ? incrementalMigrations : upgrade ? workflowMigrations : []
+    for (const name of migrations.filter(name => !pendingMigrations.includes(name))) {
       if (name.startsWith('020_')) {
         sql('grant select, insert, update, delete on all tables in schema public to authenticated; grant usage, select on all sequences in schema public to authenticated')
       }
@@ -75,6 +81,57 @@ async function main() {
     `)
 
 
+    if (incrementalUpgrade) {
+      assert.equal(incrementalMigrations.length, 3)
+      const payload = { client_id:id(200),issue_date:'2026-01-01',due_date:'2026-02-01',tax_rate:0,currency:'USD',notes:'Synthetic upgrade' }
+      asUser(1, `select save_invoice('${id(1200)}','${JSON.stringify(payload)}','[{"description":"Existing work","quantity":1,"rate":100}]',null)`, true)
+      asUser(1, `select invoice_action('${id(1200)}','issue',(select updated_at from invoices where id='${id(1200)}'))`, true)
+      const receipt = `select record_invoice_payment('${id(1201)}','${id(1200)}',40,'2026-01-15','bank_transfer','Synthetic upgrade')`
+      const reversal = `select reverse_invoice_payment('${id(1202)}','${id(1201)}','Synthetic receipt correction')`
+      asUser(1, receipt, true)
+      asUser(1, reversal, true)
+      asUser(1, `select record_invoice_payment('${id(1203)}','${id(1200)}',25,'2026-01-16','bank_transfer','Replacement receipt')`, true)
+      sql(`update projects set client_id='${id(200)}' where id='${id(300)}';
+        insert into time_entries(id,user_id,project_id,start_at,end_at,duration_minutes,billable_rate,status)
+        values('${id(1204)}','${id(3)}','${id(300)}','2026-01-01 09:00Z','2026-01-01 10:00Z',60,75,'APPROVED');`)
+      const timeInvoice = `select create_invoice_from_time('${id(1205)}',array['${id(1204)}'::uuid],'${JSON.stringify({...payload,project_id:id(300)})}')`
+      asUser(1, timeInvoice, true)
+      asUser(3, `insert into expenses(id,user_id,expense_date,amount,currency,status) values('${id(1206)}','${id(3)}','2026-01-01',15,'USD','DRAFT')`, true)
+      asUser(3, `select review_work_record('expenses','${id(1206)}','submit',(select updated_at from expenses where id='${id(1206)}'))`, true)
+      asUser(2, `select review_work_record('expenses','${id(1206)}','approve',(select updated_at from expenses where id='${id(1206)}'))`, true)
+      asUser(1, `select set_own_preferences('{"fiscal_year_start":4,"date_format":"DD/MM/YYYY"}')`, true)
+      const tables = sql(`select quote_ident(schemaname)||'.'||quote_ident(tablename) from pg_tables where schemaname in ('public','amountly_private') order by 1`).split('\n')
+      const snapshots = tables.map(table => {
+        const query = `select coalesce(jsonb_agg(row order by row::text), '[]'::jsonb) from (select to_jsonb(t) as row from ${table} t) records`
+        return { table, query, before:sql(query) }
+      })
+      const backup = path.join(root, 'committed-schema.dump')
+      execFileSync(path.join(bin, 'pg_dump'), ['-h',socket,'-U','amountly_test','-d','postgres','-Fc','-f',backup], { stdio:'pipe' })
+      for (const name of incrementalMigrations) sql(fs.readFileSync(path.join('supabase/migrations', name), 'utf8'))
+      const verifySnapshots = () => {
+        for (const snapshot of snapshots) assert.equal(sql(snapshot.query), snapshot.before, `${snapshot.table}: incremental upgrade/retry changed existing data`)
+      }
+      verifySnapshots()
+      // Existing command retries remain idempotent after the upgrade.
+      asUser(1, receipt, true)
+      asUser(1, reversal, true)
+      asUser(1, timeInvoice, true)
+      verifySnapshots()
+      assert.equal(sql('select count(*) from amountly_private.capture_requests'), '0')
+      assert.equal(sql('select count(*) from legacy_payment_reviews'), '0')
+      denied(() => asUser(5, receipt))
+      asUser(1, `select record_invoice_payment('${id(1207)}','${id(1200)}',75,'2026-01-17','bank_transfer','Remaining balance')`, true)
+      assert.equal(asUser(1, `select status from invoices where id='${id(1200)}'`), 'PAID')
+      sql('create database recovery')
+      execFileSync(path.join(bin, 'pg_restore'), ['-h',socket,'-U','amountly_test','-d','recovery','--exit-on-error',backup], { stdio:'pipe' })
+      for (const snapshot of snapshots) {
+        const restored = execFileSync(path.join(bin,'psql'), [...psqlArgs.slice(0,-1),'recovery','-c',snapshot.query], { encoding:'utf8',stdio:'pipe' }).trim()
+        assert.equal(restored, snapshot.before, `${snapshot.table}: incremental backup recovery changed data`)
+      }
+      console.log(`PASS: committed-schema upgrade preserves all ${snapshots.length} public/private tables, payments, reversals, reserved time, approvals, preferences and history; old retries, remaining payments, tenant isolation and backup restore pass`)
+      return
+    }
+
     if (upgrade) {
       // Rehearse installing the release over records written by the old schema.
       // Keep legacy PAID status and anomalies; never fabricate cash receipts.
@@ -96,7 +153,10 @@ async function main() {
           values('${id(982)}','${id(1)}','${id(100)}','${id(980)}','LEGACY-1','2025-01-01','2025-02-01','paid',25,25,'2025-02-01');
         insert into vendor_bill_line_items(vendor_bill_id,description,quantity,rate,amount) values('${id(982)}','Legacy line',1,25,25);
       `)
-      const snapshots = ['organizations','users','clients','projects','invoices','invoice_line_items','expenses','time_entries','vendors','bills','vendor_bills','vendor_bill_line_items'].map(table => {
+      sql(`insert into purchase_orders(id,user_id,organization_id,vendor_id,po_number,date,status,subtotal,total)
+        values('${id(987)}','${id(1)}','${id(100)}','${id(980)}','LEGACY-PO','2025-01-01','received',15,15);
+        insert into purchase_order_line_items(purchase_order_id,description,quantity,rate,amount) values('${id(987)}','Legacy order',1,15,15);`)
+      const snapshots = ['organizations','users','clients','projects','invoices','invoice_line_items','expenses','time_entries','vendors','bills','vendor_bills','vendor_bill_line_items','purchase_orders','purchase_order_line_items'].map(table => {
         const columns = sql(`select string_agg(quote_ident(column_name), ',' order by ordinal_position) from information_schema.columns where table_schema='public' and table_name='${table}'`)
         const query = `select coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) from (select ${columns} from public.${table} order by id) t`
         return { table, query, before: sql(query) }
@@ -347,6 +407,114 @@ async function main() {
     console.log('PASS: competing review/payment/cancellation writes and duplicate bill creates serialize; archived vendors reject new bills and preserve existing payments')
     console.log('PASS: independent review, reject/resubmit, immutable scoped history, bill duplicate/version checks, paid preservation, atomic vendor bills and protected line totals')
 
+    // Requests and records are atomic; replay uses immutable original input.
+    const captureData={user_id:id(8),name:'Retry bill',payee:'Retry payee',amount:11.25,currency:'USD',category:'other',due_date:'2026-01-01'}
+    const capture=(kind,record,data)=>`select create_money_record('${kind}','${id(record)}','${JSON.stringify(data)}'::jsonb)`
+    const captureRace=await Promise.all([1,2,3].map(()=>concurrent(path.join(bin,'psql'),[...psqlArgs,'-c',asUserSql(8,capture('bills',960,captureData),true)])))
+    assert.ok(captureRace.every(r=>r.stdout.trim()===id(960)))
+    assert.equal(sql(`select count(*) from record_events where record_id='${id(960)}'`),'1')
+    denied(()=>asUser(8,capture('bills',960,{...captureData,amount:12})),'22023')
+    denied(()=>asUser(5,capture('bills',960,captureData)))
+    denied(()=>asUser(7,capture('bills',961,{...captureData,user_id:id(7)})))
+    denied(()=>asUser(8,capture('bills',961,{...captureData,user_id:id(5)})))
+    for(const patch of [{amount:1.001},{amount:0},{amount:'12'},{amount:100000000},{name:{}},{paid_at:'2026-01-01'},{status:'paid'},{auto_pay:'true'},{due_date:'bad'}]) {
+      denied(()=>asUser(8,capture('bills',961,{...captureData,...patch})),'22023')
+    }
+    asUser(8,`select bill_action('${id(960)}','pay',(select updated_at from bills where id='${id(960)}'),'2026-01-02')`,true)
+    assert.equal(asUser(8,capture('bills',960,captureData)),id(960))
+    assert.equal(asUser(8,`select status from bills where id='${id(960)}'`),'paid')
+    const retryExpense={user_id:id(3),amount:15,currency:'USD',expense_date:'2026-01-01',status:'DRAFT',project_id:id(300)}
+    assert.equal(asUser(3,capture('expenses',962,retryExpense),true),id(962))
+    assert.equal(asUser(3,capture('expenses',962,retryExpense)),id(962))
+    denied(()=>asUser(3,capture('expenses',963,{...retryExpense,project_id:id(301)})))
+    denied(()=>asUser(3,capture('expenses',963,{...retryExpense,receipt_path:id(5)+'/fake.pdf'})))
+    denied(()=>asUser(3,capture('expenses',963,{...retryExpense,status:'APPROVED'})),'22023')
+    denied(()=>asUser(3,capture('expenses',963,{...retryExpense,invoice_id:id(400)})),'22023')
+    denied(()=>asUser(3,`select * from amountly_private.capture_requests`))
+    denied(()=>asUser(3,`delete from amountly_private.capture_requests`))
+    denied(()=>sql(`set role anon; ${capture('bills',960,captureData)}`))
+    assert.equal(sql(`select count(*) from amountly_private.capture_requests where request_id='${id(963)}'`),'0')
+    // Archived vendors can replay a committed request but cannot create a new bill.
+    assert.equal(asUser(1,vendorSave(911)),id(911))
+    denied(()=>asUser(5,vendorSave(911)))
+    denied(()=>asUser(1,vendorSave(911,{...vendorData,notes:'Changed'})),'22023')
+    sql(`set "request.jwt.claims" = '{"role":"service_role"}'; update users set is_active=false where id='${id(8)}'`)
+    denied(()=>asUser(8,capture('bills',960,captureData)))
+    sql(`set "request.jwt.claims" = '{"role":"service_role"}'; update users set is_active=true where id='${id(8)}'`)
+    console.log('PASS: atomic capture replay, concurrent identical retries, changed-input denial, private ledger, tenant/receipt boundaries, revoked access and recovery after payment/archive')
+
+    // Legacy review requires explicit evidence; old status/date remain auditable.
+    for(const n of [970,971,972]) sql(`insert into invoices(id,organization_id,client_id,invoice_number,issue_date,due_date,subtotal,total,currency,status,paid_at)
+      values('${id(n)}','${id(100)}','${id(200)}','LEGACY-REVIEW-${n}','2025-01-01','2025-02-01',50,50,'USD','PAID','2025-01-20')`)
+    const legacyVersion=n=>asUser(1,`select updated_at from invoices where id='${id(n)}'`)
+    const legacyInput={action:'record_payment',evidence:'Synthetic remittance reviewed for this test',amount:20,paid_on:'2025-01-15',method:'bank_transfer',reference:'Synthetic evidence'}
+    const legacyReview=(n,r,data=legacyInput,version=legacyVersion(n))=>`select review_legacy_payment('${id(r)}','${id(n)}','${version}','${JSON.stringify(data)}')`
+    for(const actor of [3,4,5,7,8,9]) denied(()=>asUser(actor,legacyReview(970,973)))
+    for(const patch of [{amount:51},{amount:1.001},{paid_on:'2024-01-01'},{method:'unsupported'},{evidence:''},{unknown:true}]) {
+      denied(()=>asUser(1,legacyReview(970,973,{...legacyInput,...patch})),'22023')
+    }
+    assert.equal(sql(`select count(*) from legacy_payment_reviews`),'0')
+    const legacyOriginalVersion=legacyVersion(970),legacyCommand=legacyReview(970,973,legacyInput,legacyOriginalVersion)
+    asUser(1,legacyCommand,true)
+    assert.equal(asUser(1,legacyCommand),id(973))
+    assert.equal(asUser(1,`select status from invoices where id='${id(970)}'`),'SENT')
+    assert.equal(sql(`select sum(amount) from invoice_payments where invoice_id='${id(970)}'`),'20.00')
+    assert.equal(sql(`select original_status||':'||original_paid_at::date from legacy_payment_reviews where id='${id(973)}'`),'PAID:2025-01-20')
+    denied(()=>asUser(1,legacyReview(970,973,{...legacyInput,amount:21},legacyOriginalVersion)),'22023')
+    denied(()=>asUser(1,`update legacy_payment_reviews set evidence='Changed evidence'`))
+    denied(()=>asUser(1,`delete from legacy_payment_reviews`))
+    assert.equal(asUser(5,`select count(*) from legacy_payment_reviews`),'0')
+    asUser(2,legacyReview(971,974,{...legacyInput,amount:50}),true)
+    assert.equal(asUser(1,`select status from invoices where id='${id(971)}'`),'PAID')
+    const reopen={action:'reopen',evidence:'Synthetic review found the original paid flag unsupported'}
+    const originalReopenVersion=legacyVersion(972)
+    const legacyRace=await Promise.allSettled([975,976].map(r=>concurrent(path.join(bin,'psql'),[...psqlArgs,'-c',asUserSql(1,legacyReview(972,r,reopen,originalReopenVersion),true)])))
+    assert.equal(legacyRace.filter(result=>result.status==='fulfilled').length,1)
+    assert.equal(asUser(1,`select status from invoices where id='${id(972)}'`),'SENT')
+    assert.equal(sql(`select count(*) from invoice_payments where invoice_id='${id(972)}'`),'0')
+    assert.equal(sql(`select count(*) from invoice_events where invoice_id='${id(972)}' and action='legacy_reviewed'`),'1')
+    denied(()=>sql(`set role anon; ${legacyCommand}`))
+    console.log('PASS: legacy review evidence/roles, partial/full receipts, preserved original state, immutable scoped review, safe retry and concurrent reopen')
+
+    sql(`insert into vendors(id,user_id,organization_id,name) values('${id(1100)}','${id(1)}','${id(100)}','Synthetic PO vendor')`)
+    const poData={vendor_id:id(1100),po_number:'PO-QA',date:'2026-01-01',expected_date:'2026-02-01',tax_rate:10,currency:'USD',notes:'Synthetic'}
+    const poSave=(n,data=poData,items=lines)=>`select save_purchase_order('${id(n)}','${JSON.stringify(data)}','${JSON.stringify(items)}')`
+    for(const actor of [3,4,5,7,8,9]) denied(()=>asUser(actor,poSave(1101)))
+    denied(()=>asUser(1,poSave(1101,poData,[...lines,{description:'Bad',quantity:1,rate:-1}])),'22023')
+    assert.equal(sql(`select count(*) from purchase_orders where id='${id(1101)}'`),'0')
+    for(const patch of [{expected_date:'2025-01-01'},{currency:null},{tax_rate:101},{total:1},{po_number:''}]) denied(()=>asUser(1,poSave(1101,{...poData,...patch})),'22023')
+    const poRace=await Promise.all([1,2].map(()=>concurrent(path.join(bin,'psql'),[...psqlArgs,'-c',asUserSql(1,poSave(1101),true)])))
+    assert.ok(poRace.every(result=>result.stdout.trim()===id(1101)))
+    assert.equal(sql(`select total from purchase_orders where id='${id(1101)}'`),'220.00')
+    assert.equal(sql(`select count(*) from record_events where record_id='${id(1101)}'`),'1')
+    denied(()=>asUser(1,poSave(1102)),'PT409')
+    denied(()=>asUser(1,poSave(1101,{...poData,notes:'Changed'})),'22023')
+    for(const table of ['purchase_orders','purchase_order_line_items']) {
+      denied(()=>asUser(1,`delete from ${table}`))
+      assert.equal(sql(`select has_table_privilege('authenticated','${table}','INSERT') or has_table_privilege('authenticated','${table}','UPDATE')`),'f')
+    }
+    for(const actor of [3,4,5,7,8,9]) assert.equal(asUser(actor,`select count(*) from purchase_orders where id='${id(1101)}'`),'0')
+    assert.equal(asUser(5,`select count(*) from purchase_order_line_items where purchase_order_id='${id(1101)}'`),'0')
+    const poAction=(n,action,version=`(select updated_at from purchase_orders where id='${id(n)}')`)=>`select purchase_order_action('${id(n)}','${action}',${version})`
+    denied(()=>asUser(1,poAction(1101,'receive')),'22023')
+    asUser(1,poAction(1101,'send'),true)
+    asUser(1,poAction(1101,'receive'),true)
+    denied(()=>asUser(1,poAction(1101,'cancel')),'22023')
+    asUser(1,poSave(1102,{...poData,po_number:'PO-RACE'}),true)
+    const poVersion=asUser(1,`select updated_at from purchase_orders where id='${id(1102)}'`)
+    const poStateRace=await Promise.allSettled(['send','cancel'].map(action=>concurrent(path.join(bin,'psql'),[...psqlArgs,'-c',asUserSql(1,poAction(1102,action,`'${poVersion}'`),true)])))
+    assert.equal(poStateRace.filter(result=>result.status==='fulfilled').length,1)
+    asUser(1,`update vendors set archived_at=now() where id='${id(1100)}'`,true)
+    assert.equal(asUser(1,poSave(1101)),id(1101))
+    denied(()=>asUser(1,poSave(1103,{...poData,po_number:'PO-ARCHIVED'})),'22023')
+    sql(`insert into purchase_orders(id,user_id,organization_id,vendor_id,po_number,date,status,subtotal,total)
+      values('${id(1104)}','${id(1)}','${id(100)}','${id(1100)}','OLD-NO-CURRENCY','2025-01-01','draft',15,15)`)
+    denied(()=>asUser(1,poAction(1104,'send')),'22023')
+    asUser(1,poAction(1104,'cancel'),true)
+    assert.equal(sql(`select currency is null from purchase_orders where id='${id(1104)}'`),'t')
+    denied(()=>sql(`set role anon; ${poSave(1101)}`))
+    console.log('PASS: atomic PO totals/lines, idempotent/concurrent saves, role/parent scopes, direct-write denial, versioned transitions, preserved cancellation/history and unknown historical currency')
+
     // Canonical single-workspace registry cannot be forged by browser clients.
     assert.equal(asUser(1,`select workspace_id from workspace_memberships`),id(100))
     assert.equal(asUser(6,`select workspace_id from workspace_memberships`),id(6))
@@ -431,4 +599,4 @@ async function main() {
     fs.rmSync(socket, { recursive: true, force: true })
   }
 }
-main().catch(error => { console.error(error.message); process.exitCode = 1 })
+main().catch(error => { console.error(error.stack); process.exitCode = 1 })

@@ -603,7 +603,7 @@ export default function SettingsPage() {
                 <select id="report-basis" className="flex h-10 rounded-md border bg-background px-3 text-sm" value={taxPrefs.accounting_basis} onChange={event=>setTaxPrefs({...taxPrefs,accounting_basis:event.target.value})}>
                   <option value="cash">Cash received</option><option value="accrual">Invoices issued</option>
                 </select>
-                <p className="text-sm text-muted-foreground">Tax Prep uses calendar years. Fiscal-year and date-format preferences are saved for future report formatting.</p>
+                <p className="text-sm text-muted-foreground">Your fiscal start month applies to Workspace reports in Tax Prep. Tax deadlines and estimates use calendar years. Date format applies to financial record lists and history; CSV exports keep ISO dates.</p>
               </div>
               <Button onClick={handleSaveTaxPrefs} disabled={savingTax}>
                 {savingTax ? 'Saving…' : 'Save Preferences'}

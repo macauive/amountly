@@ -8,7 +8,6 @@ import type {
   UpdateVendorBillInput,
   PurchaseOrder,
   CreatePurchaseOrderInput,
-  UpdatePurchaseOrderInput,
 } from '@/types/models'
 import { BillStatus, PurchaseOrderStatus } from '@/types/enums'
 import { recordError } from '@/services/review.service'
@@ -86,17 +85,18 @@ export async function getVendorBills(): Promise<VendorBill[]> {
 
 export async function createVendorBill(
   input: CreateVendorBillInput,
-  lineItems: { description: string; quantity: number; rate: number; amount: number; order: number }[]
+  lineItems: { description: string; quantity: number; rate: number; amount: number; order: number }[],
+  requestId = crypto.randomUUID()
 ): Promise<VendorBill> {
   const supabase = getSupabaseClient()
   const { data: id, error } = await supabase.rpc('save_vendor_bill', {
-    p_id: crypto.randomUUID(),
+    p_id: requestId,
     p_data: { vendor_id:input.vendor_id,bill_number:input.bill_number,issue_date:input.issue_date,due_date:input.due_date,tax_rate:input.tax_rate,currency:input.currency,notes:input.notes ?? '' },
     p_lines:lineItems.map(({description,quantity,rate})=>({description,quantity,rate})),
   })
   if(error) throw recordError(error.code)
   const {data,error:readError}=await supabase.from('vendor_bills').select('*').eq('id',id).single()
-  if(readError) throw new Error('Bill saved. Reload to view it.')
+  if(readError) throw recordError()
   return mapVendorBill(data as LegacyVendorBillRow)
 }
 
@@ -123,57 +123,36 @@ export async function generateBillNumber(): Promise<string> {
 // ─── Purchase Orders ──────────────────────────────────────────
 
 export async function getPurchaseOrders(): Promise<PurchaseOrder[]> {
-  const supabase = getSupabaseClient()
-  const { data, error } = await supabase
-    .from('purchase_orders')
-    .select('*, vendor:vendors(*), line_items:purchase_order_line_items(*)')
-    .order('date', { ascending: false })
-
-  if (error) throw new Error(error.message)
-  return data as PurchaseOrder[]
+  const rows: PurchaseOrder[] = []
+  for (let offset = 0; ; offset += 200) {
+    const { data, error } = await getSupabaseClient().from('purchase_orders')
+      .select('*, vendor:vendors(*), line_items:purchase_order_line_items(*)').order('date', { ascending: false }).order('id').range(offset, offset + 199)
+    if (error) throw new Error('Could not load purchase orders.')
+    rows.push(...(data ?? []) as PurchaseOrder[])
+    if (!data || data.length < 200) return rows
+  }
 }
 
 export async function createPurchaseOrder(
   input: CreatePurchaseOrderInput,
-  lineItems: { description: string; quantity: number; rate: number; amount: number; order: number }[]
+  lineItems: { description: string; quantity: number; rate: number; amount: number; order: number }[],
+  requestId = crypto.randomUUID()
 ): Promise<PurchaseOrder> {
   const supabase = getSupabaseClient()
-  const { currency: _currency, ...legacyCompatibleInput } = input
-
-  const { data: po, error: poError } = await supabase
-    .from('purchase_orders')
-    .insert(input)
-    .select()
-    .single()
-
-  if (poError) throw new Error(poError.message)
-
-  if (lineItems.length > 0) {
-    const rows = lineItems.map((l) => ({ ...l, purchase_order_id: po.id }))
-    const { error: lineError } = await supabase.from('purchase_order_line_items').insert(rows)
-    if (lineError) throw new Error(lineError.message)
-  }
-
-  return po as PurchaseOrder
-}
-
-export async function updatePurchaseOrder(id: string, input: UpdatePurchaseOrderInput): Promise<PurchaseOrder> {
-  const supabase = getSupabaseClient()
-  const { data, error } = await supabase
-    .from('purchase_orders')
-    .update(input)
-    .eq('id', id)
-    .select()
-    .single()
-
-  if (error) throw new Error(error.message)
+  const { data: id, error } = await supabase.rpc('save_purchase_order', {
+    p_id: requestId,
+    p_data: { vendor_id: input.vendor_id, po_number: input.po_number, date: input.date, expected_date: input.expected_date ?? null, tax_rate: input.tax_rate, currency: input.currency, notes: input.notes ?? '' },
+    p_lines: lineItems.map(({ description, quantity, rate }) => ({ description, quantity, rate })),
+  })
+  if (error) throw recordError(error.code)
+  const { data, error: readError } = await supabase.from('purchase_orders').select('*').eq('id', id).single()
+  if (readError) throw recordError()
   return data as PurchaseOrder
 }
 
-export async function deletePurchaseOrder(id: string): Promise<void> {
-  const supabase = getSupabaseClient()
-  const { error } = await supabase.from('purchase_orders').delete().eq('id', id)
-  if (error) throw new Error(error.message)
+export async function purchaseOrderAction(po: PurchaseOrder, action: 'send' | 'receive' | 'cancel'): Promise<void> {
+  const { error } = await getSupabaseClient().rpc('purchase_order_action', { p_id: po.id, p_action: action, p_expected_updated_at: po.updated_at })
+  if (error) throw recordError(error.code)
 }
 
 export async function generatePONumber(): Promise<string> {

@@ -1,11 +1,14 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { useDisplayDate } from '@/hooks/useDisplayDate'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAppState } from '@/contexts/AppStateContext'
 
 // Personal bills
 import { getBills, createBill, updateBill, cancelBill, markBillPaid } from '@/services/bills.service'
+import { useCreateAttempt } from '@/hooks/useCreateAttempt'
+import { SaveAttemptNotice } from '@/components/SaveAttemptNotice'
 import { RecordHistoryDialog } from '@/components/RecordHistoryDialog'
 import type { Bill } from '@/types/models'
 import {
@@ -30,9 +33,8 @@ import {
   generateBillNumber,
   getPurchaseOrders,
   createPurchaseOrder,
-  deletePurchaseOrder,
+  purchaseOrderAction,
   generatePONumber,
-  updatePurchaseOrder,
 } from '@/services/accounts-payable.service'
 import type { Vendor, VendorBill, PurchaseOrder } from '@/types/models'
 import {
@@ -154,6 +156,7 @@ type BillReminderItem = {
 // ─────────────────────────────────────────────────────────────
 
 function PersonalBillsView() {
+  const displayDate = useDisplayDate()
   const { user } = useAuth()
   const [bills, setBills] = useState<Bill[]>([])
   const [loading, setLoading] = useState(true)
@@ -163,7 +166,7 @@ function PersonalBillsView() {
   const [historyId,setHistoryId]=useState<string|null>(null)
   const [paymentBill,setPaymentBill]=useState<Bill|null>(null)
   const [paidOn,setPaidOn]=useState(format(new Date(),'yyyy-MM-dd'))
-  const billRequestId=useRef('')
+  const createAttempt = useCreateAttempt<Parameters<typeof createBill>[0]>()
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null)
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState('upcoming')
@@ -189,24 +192,25 @@ function PersonalBillsView() {
   }
 
   const openCreate = () => {
-    billRequestId.current=''
+    if (!createAttempt.reset()) { setDialogOpen(true); return }
     setSelectedBill(null)
     setFormData({ name: '', payee: '', amount: '', category: BillCategory.other, due_date: format(addDays(new Date(), 30), 'yyyy-MM-dd'), recurrence: BillRecurrence.monthly, auto_pay: false, notes: '' })
     setDialogOpen(true)
   }
 
   const openEdit = (bill: Bill) => {
+    if (!createAttempt.reset()) { setDialogOpen(true); return }
     setSelectedBill(bill)
     setFormData({ name: bill.name, payee: bill.payee, amount: bill.amount.toString(), category: bill.category, due_date: bill.due_date, recurrence: bill.recurrence, auto_pay: bill.auto_pay, notes: bill.notes || '' })
     setDialogOpen(true)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault(); setSaving(true)
+    e.preventDefault(); if (saving) return; setSaving(true)
     try {
       const data = { user_id: user?.id!, name: formData.name, payee: formData.payee, amount: parseFloat(formData.amount), currency: selectedBill?.currency ?? 'USD', category: formData.category, due_date: formData.due_date, status: BillStatus.upcoming, recurrence: formData.recurrence, auto_pay: formData.auto_pay, notes: formData.notes || undefined }
       if (selectedBill) { await updateBill(selectedBill.id, data, selectedBill.updated_at); toast.success('Bill updated') }
-      else { billRequestId.current ||= crypto.randomUUID(); await createBill(data,billRequestId.current); billRequestId.current=''; toast.success('Bill added') }
+      else { await createAttempt.run(data, createBill); toast.success('Bill added') }
       setDialogOpen(false); loadData()
     } catch (error) { toast.error(error instanceof Error ? error.message : 'Failed to save bill') }
     finally { setSaving(false) }
@@ -348,7 +352,7 @@ function PersonalBillsView() {
                       <TableCell><Badge variant="outline">{billCategoryLabels[bill.category]}</Badge></TableCell>
                       <TableCell>
                         <div className="flex flex-col">
-                          <span>{format(parseISO(bill.due_date), 'MMM d, yyyy')}</span>
+                          <span>{displayDate(bill.due_date)}</span>
                           {bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled && (
                             <span className={`text-xs ${differenceInDays(parseISO(bill.due_date), new Date()) < 0 ? 'text-destructive' : 'text-muted-foreground'}`}>{getDaysLabel(bill.due_date)}</span>
                           )}
@@ -374,11 +378,12 @@ function PersonalBillsView() {
         </TabsContent>
       </Tabs>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={dialogOpen} onOpenChange={open => { if (!saving) setDialogOpen(open) }}>
         <DialogContent className="max-w-lg">
           <DialogHeader><DialogTitle>{selectedBill ? 'Edit Bill' : 'Add Bill'}</DialogTitle><DialogDescription>{selectedBill ? 'Update bill details' : 'Add a new bill to track'}</DialogDescription></DialogHeader>
           <form onSubmit={handleSubmit}>
-            <div className="grid gap-4 py-4">
+            <SaveAttemptNotice message={createAttempt.message} />
+            <fieldset disabled={saving || createAttempt.unknown} className="grid gap-4 py-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><Label>Bill Name *</Label><Input value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} placeholder="e.g. Electric Bill" required /></div>
                 <div className="space-y-2"><Label>Payee *</Label><Input value={formData.payee} onChange={e => setFormData({ ...formData, payee: e.target.value })} placeholder="e.g. Con Edison" required /></div>
@@ -406,10 +411,10 @@ function PersonalBillsView() {
                 <Label htmlFor="auto_pay" className="text-sm font-normal">Auto-pay enabled</Label>
               </div>
               <div className="space-y-2"><Label>Notes</Label><Textarea value={formData.notes} onChange={e => setFormData({ ...formData, notes: e.target.value })} rows={2} /></div>
-            </div>
+            </fieldset>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={saving}>{saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{selectedBill ? 'Save Changes' : 'Add Bill'}</Button>
+              <Button type="button" variant="outline" disabled={saving} onClick={() => { setDialogOpen(false); if (createAttempt.unknown) void loadData() }}>{createAttempt.unknown ? 'Close and review list' : 'Cancel'}</Button>
+              <Button type="submit" disabled={saving}>{saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{createAttempt.unknown ? 'Retry original save' : selectedBill ? 'Save Changes' : 'Add Bill'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -432,6 +437,7 @@ function PersonalBillsView() {
 // ─────────────────────────────────────────────────────────────
 
 function AccountsPayableView() {
+  const displayDate = useDisplayDate()
   const [payableTab, setPayableTab] = useState('bills')
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('tab') === 'vendors') setPayableTab('vendors')
@@ -457,6 +463,7 @@ function AccountsPayableView() {
   // Bill dialog
   const [billDialog, setBillDialog] = useState(false)
   const [savingBill, setSavingBill] = useState(false)
+  const vendorBillAttempt = useCreateAttempt<{ input: Parameters<typeof createVendorBill>[0]; lines: Parameters<typeof createVendorBill>[1] }>()
   const [paymentBill,setPaymentBill]=useState<VendorBill|null>(null)
   const [paidOn,setPaidOn]=useState(format(new Date(),'yyyy-MM-dd'))
   const [historyId,setHistoryId]=useState<string|null>(null)
@@ -469,6 +476,9 @@ function AccountsPayableView() {
   // PO dialog
   const [poDialog, setPODialog] = useState(false)
   const [savingPO, setSavingPO] = useState(false)
+  const poAttempt = useCreateAttempt<{ input: Parameters<typeof createPurchaseOrder>[0]; lines: Parameters<typeof createPurchaseOrder>[1] }>()
+  const [poConfirmation, setPOConfirmation] = useState<{ po: PurchaseOrder; action: 'send' | 'receive' } | null>(null)
+  const [poHistory, setPOHistory] = useState<string | null>(null)
   const [poForm, setPOForm] = useState({ vendor_id: '', po_number: '', date: format(new Date(), 'yyyy-MM-dd'), expected_date: '', tax_rate: '0', notes: '' })
   const [poLines, setPOLines] = useState<LineItemRow[]>([{ description: '', quantity: 1, rate: 0, amount: 0 }])
 
@@ -532,6 +542,7 @@ function AccountsPayableView() {
   // ── Bill handlers ──
 
   const openCreateBill = async () => {
+    if (!vendorBillAttempt.reset()) { setBillDialog(true); return }
     const num = await generateBillNumber()
     setBillForm({ vendor_id: '', bill_number: num, issue_date: format(new Date(), 'yyyy-MM-dd'), due_date: format(addDays(new Date(), 30), 'yyyy-MM-dd'), tax_rate: '0', notes: '' })
     setBillLines([{ description: '', quantity: 1, rate: 0, amount: 0 }])
@@ -566,11 +577,11 @@ function AccountsPayableView() {
   }
 
   const handleSaveBill = async (e: React.FormEvent) => {
-    e.preventDefault(); setSavingBill(true)
+    e.preventDefault(); if (savingBill) return; setSavingBill(true)
     try {
-      const input = { user_id: user?.id, organization_id: user?.organization_id, vendor_id: billForm.vendor_id, bill_number: billForm.bill_number, issue_date: billForm.issue_date, due_date: billForm.due_date, subtotal: billSubtotal, tax_rate: parseFloat(billForm.tax_rate) || 0, tax_amount: billTaxAmt, total: billTotal, currency: 'USD', status: BillStatus.upcoming, notes: billForm.notes || undefined }
+      const input = { user_id: user!.id, organization_id: user?.organization_id, vendor_id: billForm.vendor_id, bill_number: billForm.bill_number, issue_date: billForm.issue_date, due_date: billForm.due_date, subtotal: billSubtotal, tax_rate: parseFloat(billForm.tax_rate) || 0, tax_amount: billTaxAmt, total: billTotal, currency: 'USD', status: BillStatus.upcoming, notes: billForm.notes || undefined }
       const lines = billLines.filter(l => l.description).map((l, i) => ({ ...l, order: i }))
-      await createVendorBill(input as any, lines)
+      await vendorBillAttempt.run({ input, lines }, (original, id) => createVendorBill(original.input, original.lines, id))
       toast.success('Bill created'); setBillDialog(false); loadData()
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to save bill'))
@@ -594,6 +605,7 @@ function AccountsPayableView() {
   // ── PO handlers ──
 
   const openCreatePO = async () => {
+    if (!poAttempt.reset()) { setPODialog(true); return }
     const num = await generatePONumber()
     setPOForm({ vendor_id: '', po_number: num, date: format(new Date(), 'yyyy-MM-dd'), expected_date: '', tax_rate: '0', notes: '' })
     setPOLines([{ description: '', quantity: 1, rate: 0, amount: 0 }])
@@ -601,21 +613,16 @@ function AccountsPayableView() {
   }
 
   const handleSavePO = async (e: React.FormEvent) => {
-    e.preventDefault(); setSavingPO(true)
+    e.preventDefault(); if (savingPO) return; setSavingPO(true)
     try {
       const input = { user_id: user?.id, organization_id: user?.organization_id, vendor_id: poForm.vendor_id, po_number: poForm.po_number, date: poForm.date, expected_date: poForm.expected_date || undefined, subtotal: poSubtotal, tax_rate: parseFloat(poForm.tax_rate) || 0, tax_amount: poTaxAmt, total: poTotal, currency: 'USD', status: PurchaseOrderStatus.draft, notes: poForm.notes || undefined }
       const lines = poLines.filter(l => l.description).map((l, i) => ({ ...l, order: i }))
-      await createPurchaseOrder(input as any, lines)
+      await poAttempt.run({ input, lines }, (original, id) => createPurchaseOrder(original.input, original.lines, id))
       toast.success('PO created'); setPODialog(false); loadData()
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to save PO'))
     }
     finally { setSavingPO(false) }
-  }
-
-  const handlePOStatusChange = async (po: PurchaseOrder, status: PurchaseOrderStatus) => {
-    try { await updatePurchaseOrder(po.id, { status }); toast.success('PO updated'); loadData() }
-    catch { toast.error('Failed to update PO') }
   }
 
   // ── Delete ──
@@ -625,9 +632,9 @@ function AccountsPayableView() {
     try {
       if (deleteTarget.type === 'vendor') await archiveVendor(deleteTarget.id)
       else if (deleteTarget.type === 'bill') await cancelVendorBill(bills.find(bill=>bill.id===deleteTarget.id)!)
-      else await deletePurchaseOrder(deleteTarget.id)
-      toast.success(deleteTarget.type==='bill'?'Bill cancelled':deleteTarget.type==='vendor'?'Vendor archived':'Purchase order deleted'); setDeleteDialog(false); loadData()
-    } catch { toast.error('Failed to delete') }
+      else await purchaseOrderAction(pos.find(po => po.id === deleteTarget.id)!, 'cancel')
+      toast.success(deleteTarget.type==='bill'?'Bill cancelled':deleteTarget.type==='vendor'?'Vendor archived':'Purchase order cancelled; history preserved'); setDeleteDialog(false); loadData()
+    } catch (error) { toast.error(getErrorMessage(error, 'Could not confirm the change')) }
   }
 
   // ── Computed ──
@@ -646,7 +653,7 @@ function AccountsPayableView() {
     ...overdueBills.slice(0, 2).map((bill) => ({
       id: `overdue-${bill.id}`,
       title: `${bill.bill_number} is overdue`,
-      detail: `${bill.vendor?.name || 'Vendor bill'} was due ${format(parseISO(bill.due_date), 'MMM d, yyyy')}.`,
+      detail: `${bill.vendor?.name || 'Vendor bill'} was due ${displayDate(bill.due_date)}.`,
       amount: bill.total,
       badge: 'Overdue',
       tone: 'action' as const,
@@ -749,10 +756,10 @@ function AccountsPayableView() {
                       <TableRow key={bill.id}>
                         <TableCell className="font-mono font-medium">{bill.bill_number}</TableCell>
                         <TableCell>{bill.vendor?.name || '—'}</TableCell>
-                        <TableCell>{format(parseISO(bill.issue_date), 'MMM d, yyyy')}</TableCell>
+                        <TableCell>{displayDate(bill.issue_date)}</TableCell>
                         <TableCell>
                           <div className="flex flex-col">
-                            <span>{format(parseISO(bill.due_date), 'MMM d, yyyy')}</span>
+                            <span>{displayDate(bill.due_date)}</span>
                             {isPastDue && <span className="text-xs text-destructive">{Math.abs(daysLeft)}d overdue</span>}
                           </div>
                         </TableCell>
@@ -825,14 +832,15 @@ function AccountsPayableView() {
                       <TableRow key={po.id}>
                         <TableCell className="font-mono font-medium">{po.po_number}</TableCell>
                         <TableCell>{po.vendor?.name || '—'}</TableCell>
-                        <TableCell>{format(parseISO(po.date), 'MMM d, yyyy')}</TableCell>
-                        <TableCell>{po.expected_date ? format(parseISO(po.expected_date), 'MMM d, yyyy') : '—'}</TableCell>
-                        <TableCell className="text-right font-medium">{formatCurrency(po.total)}</TableCell>
+                        <TableCell>{displayDate(po.date)}</TableCell>
+                        <TableCell>{po.expected_date ? displayDate(po.expected_date) : '—'}</TableCell>
+                        <TableCell className="text-right font-medium">{po.currency ? new Intl.NumberFormat('en-US', { style: 'currency', currency: po.currency }).format(po.total) : `${po.total} · Currency unknown`}</TableCell>
                         <TableCell><Badge variant={getPOStatusVariant(po.status)}>{purchaseOrderStatusLabels[po.status]}</Badge></TableCell>
                         <TableCell className="text-right">
-                          {po.status === PurchaseOrderStatus.draft && <Button variant="ghost" size="icon" title="Mark Sent" onClick={() => handlePOStatusChange(po, PurchaseOrderStatus.sent)}><Send className="w-4 h-4" /></Button>}
-                          {po.status === PurchaseOrderStatus.sent && <Button variant="ghost" size="icon" title="Mark Received" onClick={() => handlePOStatusChange(po, PurchaseOrderStatus.received)}><CheckCircle className="w-4 h-4 text-green-600" /></Button>}
-                          <Button variant="ghost" size="icon" onClick={() => { setDeleteTarget({ type: 'po', id: po.id, label: po.po_number }); setDeleteDialog(true) }}><Trash2 className="w-4 h-4" /></Button>
+                          {po.status === PurchaseOrderStatus.draft && <Button variant="ghost" size="icon" title="Mark Sent" disabled={!po.currency} onClick={() => setPOConfirmation({ po, action: 'send' })}><Send className="w-4 h-4" /></Button>}
+                          {po.status === PurchaseOrderStatus.sent && <Button variant="ghost" size="icon" title="Mark Received" disabled={!po.currency} onClick={() => setPOConfirmation({ po, action: 'receive' })}><CheckCircle className="w-4 h-4 text-green-600" /></Button>}
+                          <Button variant="ghost" size="sm" onClick={() => setPOHistory(po.id)}>History</Button>
+                          <Button variant="ghost" size="icon" title="Cancel purchase order" disabled={!['draft','sent'].includes(po.status)} onClick={() => { setDeleteTarget({ type: 'po', id: po.id, label: po.po_number }); setDeleteDialog(true) }}><Trash2 className="w-4 h-4" /></Button>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -872,11 +880,12 @@ function AccountsPayableView() {
       </Dialog>
 
       {/* ── Bill Dialog ── */}
-      <Dialog open={billDialog} onOpenChange={setBillDialog}>
+      <Dialog open={billDialog} onOpenChange={open => { if (!savingBill) setBillDialog(open) }}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>New Vendor Bill</DialogTitle><DialogDescription>Record a bill received from a vendor</DialogDescription></DialogHeader>
           <form onSubmit={handleSaveBill}>
-            <div className="grid gap-4 py-4">
+            <SaveAttemptNotice message={vendorBillAttempt.message} />
+            <fieldset disabled={savingBill || vendorBillAttempt.unknown} className="grid gap-4 py-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><Label>Bill Number</Label><Input value={billForm.bill_number} readOnly className="bg-muted" /></div>
                 <div className="space-y-2"><Label>Vendor *</Label>
@@ -953,21 +962,25 @@ function AccountsPayableView() {
                 </div>
               </div>
               <div className="space-y-2"><Label>Notes</Label><Textarea value={billForm.notes} onChange={e => setBillForm({ ...billForm, notes: e.target.value })} rows={2} /></div>
-            </div>
+            </fieldset>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setBillDialog(false)}>Cancel</Button>
-              <Button type="submit" disabled={savingBill || !billForm.vendor_id}>{savingBill && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Create Bill</Button>
+              <Button type="button" variant="outline" disabled={savingBill} onClick={() => { setBillDialog(false); if (vendorBillAttempt.unknown) void loadData() }}>{vendorBillAttempt.unknown ? 'Close and review list' : 'Cancel'}</Button>
+              <Button type="submit" disabled={savingBill || !billForm.vendor_id}>{savingBill && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{vendorBillAttempt.unknown ? 'Retry original save' : 'Create Bill'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
+      {poHistory && <RecordHistoryDialog kind="purchase_orders" id={poHistory} onClose={() => setPOHistory(null)} />}
+      <Dialog open={!!poConfirmation} onOpenChange={open => { if (!open && !savingPO) setPOConfirmation(null) }}><DialogContent><DialogHeader><DialogTitle>{poConfirmation?.action === 'send' ? 'Record purchase order as sent?' : 'Confirm items received?'}</DialogTitle><DialogDescription>This records a status change and preserves history. It does not send the order, transfer money, or create a vendor bill.</DialogDescription></DialogHeader><p>{poConfirmation?.po.po_number}</p><Button disabled={savingPO} onClick={async () => { if (!poConfirmation) return; setSavingPO(true); try { await purchaseOrderAction(poConfirmation.po, poConfirmation.action); setPOConfirmation(null); await loadData(); toast.success('Purchase order status recorded') } catch(error) { toast.error(getErrorMessage(error, 'Could not update order')) } finally { setSavingPO(false) } }}>Confirm status</Button></DialogContent></Dialog>
+
       {/* ── PO Dialog ── */}
-      <Dialog open={poDialog} onOpenChange={setPODialog}>
+      <Dialog open={poDialog} onOpenChange={open => { if (!savingPO) setPODialog(open) }}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>New Purchase Order</DialogTitle><DialogDescription>Create a purchase order for a vendor</DialogDescription></DialogHeader>
           <form onSubmit={handleSavePO}>
-            <div className="grid gap-4 py-4">
+            <SaveAttemptNotice message={poAttempt.message} />
+            <fieldset disabled={savingPO || poAttempt.unknown} className="grid gap-4 py-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><Label>PO Number</Label><Input value={poForm.po_number} readOnly className="bg-muted" /></div>
                 <div className="space-y-2"><Label>Vendor *</Label>
@@ -998,10 +1011,10 @@ function AccountsPayableView() {
                 </div>
               </div>
               <div className="space-y-2"><Label>Notes</Label><Textarea value={poForm.notes} onChange={e => setPOForm({ ...poForm, notes: e.target.value })} rows={2} /></div>
-            </div>
+            </fieldset>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setPODialog(false)}>Cancel</Button>
-              <Button type="submit" disabled={savingPO || !poForm.vendor_id}>{savingPO && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Create PO</Button>
+              <Button type="button" variant="outline" disabled={savingPO} onClick={() => { setPODialog(false); if (poAttempt.unknown) void loadData() }}>{poAttempt.unknown ? 'Close and review list' : 'Cancel'}</Button>
+              <Button type="submit" disabled={savingPO || !poForm.vendor_id}>{savingPO && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{poAttempt.unknown ? 'Retry original save' : 'Create PO'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -1012,7 +1025,7 @@ function AccountsPayableView() {
       {/* ── Delete Confirmation ── */}
       <AlertDialog open={deleteDialog} onOpenChange={setDeleteDialog}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>{deleteTarget?.type === 'bill' ? 'Cancel' : deleteTarget?.type === 'vendor' ? 'Archive' : 'Delete'} {deleteTarget?.type === 'vendor' ? 'Vendor' : deleteTarget?.type === 'bill' ? 'Bill' : 'Purchase Order'}</AlertDialogTitle><AlertDialogDescription>{deleteTarget?.type === 'bill' ? 'Cancel this bill and preserve its history?' : deleteTarget?.type === 'vendor' ? 'Archive this vendor and preserve linked records?' : `Delete ${deleteTarget?.label}? This cannot be undone.`}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogHeader><AlertDialogTitle>{deleteTarget?.type === 'vendor' ? 'Archive' : 'Cancel'} {deleteTarget?.type === 'vendor' ? 'Vendor' : deleteTarget?.type === 'bill' ? 'Bill' : 'Purchase Order'}</AlertDialogTitle><AlertDialogDescription>{deleteTarget?.type === 'bill' ? 'Cancel this bill and preserve its history?' : deleteTarget?.type === 'vendor' ? 'Archive this vendor and preserve linked records?' : `Cancel ${deleteTarget?.label}? The order and its history will be preserved.`}</AlertDialogDescription></AlertDialogHeader>
           <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground">Confirm</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

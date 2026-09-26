@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { getInvoice, invoiceAction, recordInvoicePayment } from '@/services/invoices.service'
@@ -13,18 +13,24 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { formatDateOnly } from '@/lib/date-format'
+import { useDisplayDate } from '@/hooks/useDisplayDate'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
 import { PaymentCorrectionDialog } from '@/components/PaymentCorrectionDialog'
+import { useCreateAttempt } from '@/hooks/useCreateAttempt'
+import { SaveAttemptNotice } from '@/components/SaveAttemptNotice'
+import { LegacyPaymentReviewDialog } from '@/components/LegacyPaymentReviewDialog'
 
 const eventLabels: Record<string, string> = {
   created: 'Draft created', updated: 'Draft updated', issued: 'Invoice issued',
   payment_recorded: 'Payment recorded', cancelled: 'Invoice cancelled',
   payment_reversed: 'Payment corrected', time_reserved: 'Time reserved for billing',
+  legacy_reviewed: 'Historical payment reviewed',
 }
 
 export default function InvoiceDetailPage() {
+  const formatDateOnly = useDisplayDate()
+  const displayTimestamp = useDisplayDate(true)
   const { id = '' } = useParams<{ id: string }>() ?? {}
   const [invoice, setInvoice] = useState<Invoice | null>(null)
   const [error, setError] = useState('')
@@ -32,9 +38,10 @@ export default function InvoiceDetailPage() {
   const [busy, setBusy] = useState(false)
   const [paymentOpen, setPaymentOpen] = useState(false)
   const [correctionId, setCorrectionId] = useState<string | null>(null)
+  const [legacyReviewOpen, setLegacyReviewOpen] = useState(false)
   const [confirmAction, setConfirmAction] = useState<'issue' | 'cancel' | null>(null)
-  const paymentId = useRef('')
-  const paymentAttempt = useRef<Omit<InvoicePayment, 'invoice_id' | 'created_at'> | null>(null)
+  const paymentCapture = useCreateAttempt<{ invoiceId: string; payment: Omit<InvoicePayment, 'id' | 'invoice_id' | 'created_at'> }>()
+  const pendingPayment = paymentCapture.input?.payment
   const canRecord = useCapability(Capability.recordPayments)
   const canSend = useCapability(Capability.sendInvoices)
   const canEdit = useCapability(Capability.editInvoices)
@@ -61,24 +68,18 @@ export default function InvoiceDetailPage() {
     event.preventDefault()
     if (!invoice || busy) return
     const form = new FormData(event.currentTarget)
-    const payment = paymentAttempt.current ?? {
-      id: paymentId.current, amount: Number(form.get('amount')), paid_on: String(form.get('paid_on')),
+    const payment = {
+      amount: Number(form.get('amount')), paid_on: String(form.get('paid_on')),
       method: String(form.get('method')) as InvoicePayment['method'], reference: String(form.get('reference') || ''),
     }
-    paymentAttempt.current = payment
     setBusy(true)
     try {
-      await recordInvoicePayment(invoice.id, payment)
+      await paymentCapture.run({ invoiceId: invoice.id, payment }, (original, id) => recordInvoicePayment(original.invoiceId, { ...original.payment, id }))
       toast.success('Payment recorded')
       setPaymentOpen(false)
-      paymentAttempt.current = null
       await load()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not confirm payment. Reload before retrying.')
-      if (err && typeof err === 'object' && 'code' in err && err.code) {
-        paymentAttempt.current = null
-        paymentId.current = crypto.randomUUID()
-      }
       await load()
     } finally { setBusy(false) }
   }
@@ -102,7 +103,8 @@ export default function InvoiceDetailPage() {
     <div className="flex flex-wrap gap-2">
       {invoice.status === InvoiceStatus.draft && canEdit && !invoice.time_links?.length && <Button variant="outline" asChild><Link href={`/invoices?edit=${invoice.id}`}>Edit draft</Link></Button>}
       {invoice.status === InvoiceStatus.draft && canSend && <Button disabled={busy} onClick={() => setConfirmAction('issue')}>Issue invoice</Button>}
-      {outstanding && canRecord && <Button onClick={() => { if (!paymentAttempt.current) paymentId.current = crypto.randomUUID(); setPaymentOpen(true) }}>Record payment</Button>}
+      {outstanding && canRecord && <Button onClick={() => setPaymentOpen(true)}>Record payment</Button>}
+      {invoice.status === InvoiceStatus.paid && payments.length === 0 && canRecord && <Button onClick={() => setLegacyReviewOpen(true)}>Review historical payment</Button>}
       {outstanding && canEdit && payments.length === 0 && <Button variant="outline" onClick={() => setConfirmAction('cancel')}>Cancel invoice</Button>}
     </div>
     {!!invoice.time_links?.length && <p className="rounded-md border p-3 text-sm">Created from {invoice.time_links.length} time entries. {invoice.status === InvoiceStatus.cancelled ? 'Cancellation released the entries for billing again; the original time snapshot is preserved.' : 'Linked time is reserved against duplicate billing. To change a time draft, delete it from the invoice list and recreate it.'}</p>}
@@ -112,19 +114,22 @@ export default function InvoiceDetailPage() {
       {invoice.notes && <p className="mt-4 whitespace-pre-wrap text-sm">{invoice.notes}</p>}
       {invoice.status !== InvoiceStatus.draft && <p className="mt-4 text-sm text-muted-foreground">Issued details are locked to preserve the financial record.</p>}
     </CardContent></Card>
-    <Card><CardHeader><CardTitle>Payments</CardTitle></CardHeader><CardContent>{payments.length === 0 ? <p className="text-sm text-muted-foreground">No payments recorded.</p> : <ul className="divide-y">{payments.slice().sort((a,b) => b.paid_on.localeCompare(a.paid_on)).map(p => <li className="py-3 flex flex-wrap justify-between gap-4" key={p.id}><div><p>{formatDateOnly(p.paid_on)} · {p.method.replace('_',' ')}</p><p className="text-sm text-muted-foreground">{p.reference}</p>{p.reversal && <p className="mt-1 text-sm">Corrected {new Date(p.reversal.created_at).toLocaleDateString()}: {p.reversal.reason}</p>}</div><div className="flex items-center gap-3"><strong className={p.reversal ? 'line-through text-muted-foreground' : ''}>{money(p.amount)}</strong>{!p.reversal && canRecord && <Button variant="outline" size="sm" disabled={busy} onClick={() => setCorrectionId(p.id)}>Correct entry</Button>}</div></li>)}</ul>}</CardContent></Card>
+    <Card><CardHeader><CardTitle>Payments</CardTitle></CardHeader><CardContent>{payments.length === 0 ? <p className="text-sm text-muted-foreground">No payments recorded.</p> : <ul className="divide-y">{payments.slice().sort((a,b) => b.paid_on.localeCompare(a.paid_on)).map(p => <li className="py-3 flex flex-wrap justify-between gap-4" key={p.id}><div><p>{formatDateOnly(p.paid_on)} · {p.method.replace('_',' ')}</p><p className="text-sm text-muted-foreground">{p.reference}</p>{p.reversal && <p className="mt-1 text-sm">Corrected {formatDateOnly(p.reversal.created_at)}: {p.reversal.reason}</p>}</div><div className="flex items-center gap-3"><strong className={p.reversal ? 'line-through text-muted-foreground' : ''}>{money(p.amount)}</strong>{!p.reversal && canRecord && <Button variant="outline" size="sm" disabled={busy} onClick={() => setCorrectionId(p.id)}>Correct entry</Button>}</div></li>)}</ul>}</CardContent></Card>
     {correctionId && <PaymentCorrectionDialog key={correctionId} paymentId={correctionId} onClose={() => setCorrectionId(null)} onSaved={load} />}
-    <Card><CardHeader><CardTitle>Activity</CardTitle></CardHeader><CardContent><ul className="space-y-2 text-sm">{invoice.events?.slice().sort((a,b) => b.created_at.localeCompare(a.created_at)).map(event => <li key={event.id}>{eventLabels[event.action]} · {new Date(event.created_at).toLocaleString()}</li>)}</ul>{!invoice.events?.length && <p className="text-sm text-muted-foreground">Earlier activity was not recorded.</p>}</CardContent></Card>
+    <LegacyPaymentReviewDialog key={invoice.id} invoice={invoice} open={legacyReviewOpen} onClose={() => setLegacyReviewOpen(false)} onSaved={load} />
+    {invoice.legacy_reviews?.map(review => <Card key={review.id}><CardHeader><CardTitle>Historical payment review</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><p>{review.action === 'reopen' ? 'Reopened without payment evidence' : 'Historical payment evidence recorded'} · {displayTimestamp(review.created_at)}</p><p>Original record: Paid · {review.original_total} {review.original_currency} · Original paid date: {formatDateOnly(review.original_paid_at)}</p><p className="whitespace-pre-wrap">{review.evidence}</p></CardContent></Card>)}
+    <Card><CardHeader><CardTitle>Activity</CardTitle></CardHeader><CardContent><ul className="space-y-2 text-sm">{invoice.events?.slice().sort((a,b) => b.created_at.localeCompare(a.created_at)).map(event => <li key={event.id}>{eventLabels[event.action]} · {displayTimestamp(event.created_at)}</li>)}</ul>{!invoice.events?.length && <p className="text-sm text-muted-foreground">Earlier activity was not recorded.</p>}</CardContent></Card>
     <Dialog open={paymentOpen} onOpenChange={open => { if (!busy) setPaymentOpen(open) }}><DialogContent><DialogHeader><DialogTitle>Record payment</DialogTitle><DialogDescription>Record money already received. This does not charge your client or transfer money.</DialogDescription></DialogHeader>
       <form onSubmit={savePayment} className="space-y-4">
-        <fieldset disabled={busy || !!paymentAttempt.current} className="space-y-4">
-        <div><Label htmlFor="payment_amount">Amount ({invoice.currency})</Label><Input id="payment_amount" name="amount" type="number" step="0.01" min="0.01" max={invoice.balance_due} defaultValue={paymentAttempt.current?.amount ?? invoice.balance_due} required /></div>
-        <div><Label htmlFor="payment_date">Date received</Label><Input id="payment_date" name="paid_on" type="date" min={invoice.issue_date.slice(0,10)} max={format(new Date(),'yyyy-MM-dd')} defaultValue={paymentAttempt.current?.paid_on ?? format(new Date(),'yyyy-MM-dd')} required /></div>
-        <div><Label htmlFor="payment_method">Method</Label><select id="payment_method" name="method" defaultValue={paymentAttempt.current?.method ?? 'bank_transfer'} className="w-full rounded-md border bg-background p-2"><option value="bank_transfer">Bank transfer</option><option value="card">Card</option><option value="cash">Cash</option><option value="check">Check</option><option value="other">Other</option></select></div>
-        <div><Label htmlFor="payment_reference">Reference (optional)</Label><Input id="payment_reference" name="reference" defaultValue={paymentAttempt.current?.reference ?? ''} maxLength={200} placeholder="A short reference, without account numbers" /></div>
+        <SaveAttemptNotice message={paymentCapture.message} />
+        <fieldset disabled={busy || paymentCapture.unknown} className="space-y-4">
+        <div><Label htmlFor="payment_amount">Amount ({invoice.currency})</Label><Input id="payment_amount" name="amount" type="number" step="0.01" min="0.01" max={invoice.balance_due} defaultValue={pendingPayment?.amount ?? invoice.balance_due} required /></div>
+        <div><Label htmlFor="payment_date">Date received</Label><Input id="payment_date" name="paid_on" type="date" min={invoice.issue_date.slice(0,10)} max={format(new Date(),'yyyy-MM-dd')} defaultValue={pendingPayment?.paid_on ?? format(new Date(),'yyyy-MM-dd')} required /></div>
+        <div><Label htmlFor="payment_method">Method</Label><select id="payment_method" name="method" defaultValue={pendingPayment?.method ?? 'bank_transfer'} className="w-full rounded-md border bg-background p-2"><option value="bank_transfer">Bank transfer</option><option value="card">Card</option><option value="cash">Cash</option><option value="check">Check</option><option value="other">Other</option></select></div>
+        <div><Label htmlFor="payment_reference">Reference (optional)</Label><Input id="payment_reference" name="reference" defaultValue={pendingPayment?.reference ?? ''} maxLength={200} placeholder="A short reference, without account numbers" /></div>
         </fieldset>
         <p className="text-xs text-muted-foreground">Check the details before saving. Corrections preserve the original entry and require a reason.</p>
-        <Button type="submit" disabled={busy}>{busy ? 'Saving…' : paymentAttempt.current ? 'Retry original payment' : 'Save payment'}</Button>
+        <Button type="submit" disabled={busy}>{busy ? 'Saving…' : paymentCapture.unknown ? 'Retry original payment' : 'Save payment'}</Button>
       </form>
     </DialogContent></Dialog>
     <Dialog open={!!confirmAction} onOpenChange={open => { if (!open && !busy) setConfirmAction(null) }}><DialogContent><DialogHeader><DialogTitle>{confirmAction === 'issue' ? 'Issue this invoice?' : 'Cancel this invoice?'}</DialogTitle><DialogDescription>{confirmAction === 'issue' ? 'Check the client, dates, and totals. Issuing locks these details. You will still need to send the invoice to your client.' : 'This preserves the invoice and its history, and removes it from outstanding balances.'}</DialogDescription></DialogHeader><Button disabled={busy} onClick={applyAction}>{busy ? 'Saving…' : 'Confirm'}</Button></DialogContent></Dialog>

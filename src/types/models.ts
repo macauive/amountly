@@ -182,6 +182,7 @@ export interface Invoice {
   line_items?: InvoiceLineItem[]
   payments?: InvoicePayment[]
   events?: InvoiceEvent[]
+  legacy_reviews?: { id: string; action: 'record_payment' | 'reopen'; evidence: string; original_paid_at: string | null; original_total: number; original_currency: string; created_at: string }[]
   amount_paid?: number
   balance_due?: number
   workflow_version?: number
@@ -202,7 +203,7 @@ export interface InvoicePayment {
 
 export interface InvoiceEvent {
   id: string
-  action: 'created' | 'updated' | 'issued' | 'payment_recorded' | 'payment_reversed' | 'time_reserved' | 'cancelled'
+  action: 'created' | 'updated' | 'issued' | 'payment_recorded' | 'payment_reversed' | 'time_reserved' | 'cancelled' | 'legacy_reviewed'
   created_at: string
 }
 
@@ -404,7 +405,7 @@ export interface PurchaseOrder {
   tax_rate: number
   tax_amount: number
   total: number
-  currency: string
+  currency: string | null
   status: PurchaseOrderStatus
   notes?: string
   created_at: string

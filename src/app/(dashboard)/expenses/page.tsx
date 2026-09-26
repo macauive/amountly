@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { getExpenses, createExpense, updateExpense, archiveExpense, uploadReceipt, getReceiptUrl } from '@/services/expenses.service'
+import { useCreateAttempt } from '@/hooks/useCreateAttempt'
+import { SaveAttemptNotice } from '@/components/SaveAttemptNotice'
 import { RecordHistoryDialog } from '@/components/RecordHistoryDialog'
 import { getProjects } from '@/services/projects.service'
 import type { Expense, Project } from '@/types/models'
@@ -49,7 +51,8 @@ import { Badge } from '@/components/ui/badge'
 import { Plus, Receipt, Pencil, Trash2, Loader2, DollarSign, Wand2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { format } from 'date-fns'
-import { formatDateOnly, dateInputValue } from '@/lib/date-format'
+import { dateInputValue } from '@/lib/date-format'
+import { useDisplayDate } from '@/hooks/useDisplayDate'
 import { captureExpenseFromText, captureReceiptDocumentFromText } from '@/lib/expense-ai'
 
 function getStatusVariant(status: ExpenseStatus): 'default' | 'secondary' | 'destructive' | 'outline' {
@@ -79,6 +82,7 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 export default function ExpensesPage() {
+  const formatDateOnly = useDisplayDate()
   const { user } = useAuth()
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [projects, setProjects] = useState<Project[]>([])
@@ -130,10 +134,10 @@ export default function ExpensesPage() {
     }
   }
 
-  const createId = useRef<string>('')
+  const createAttempt = useCreateAttempt<Parameters<typeof createExpense>[0]>()
   const uploadedReceipt = useRef<{ file: File; path: string } | null>(null)
   const openCreateDialog = () => {
-    createId.current = crypto.randomUUID()
+    if (!createAttempt.reset()) { setDialogOpen(true); return }
     uploadedReceipt.current = null
     setSelectedExpense(null)
     setFormData({
@@ -154,6 +158,7 @@ export default function ExpensesPage() {
   }
 
   const openEditDialog = (expense: Expense) => {
+    if (!createAttempt.reset()) { setDialogOpen(true); return }
     uploadedReceipt.current = null
     setSelectedExpense(expense)
     setFormData({
@@ -175,6 +180,7 @@ export default function ExpensesPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (saving) return
     setSaving(true)
 
     try {
@@ -200,13 +206,13 @@ export default function ExpensesPage() {
         await updateExpense(selectedExpense.id, expenseData, selectedExpense.updated_at)
         toast.success('Expense updated')
       } else {
-        await createExpense(expenseData, createId.current)
+        await createAttempt.run(expenseData, createExpense)
         toast.success('Expense created')
       }
       setDialogOpen(false)
       loadData()
     } catch (error) {
-      toast.error('Could not confirm the save. Reload and check for the expense before creating another.')
+      toast.error(error instanceof Error ? error.message : 'Could not confirm the save. Review the expense before trying again.')
     } finally {
       setSaving(false)
     }
@@ -443,7 +449,7 @@ export default function ExpensesPage() {
       )}
 
       {/* Create/Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={dialogOpen} onOpenChange={open => { if (!saving) setDialogOpen(open) }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>
@@ -454,7 +460,8 @@ export default function ExpensesPage() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit}>
-            <div className="grid gap-4 py-4">
+            <SaveAttemptNotice message={createAttempt.message} />
+            <fieldset disabled={saving || createAttempt.unknown} className="grid gap-4 py-4">
               {!selectedExpense && (
                 <div className="rounded-lg border bg-primary/5 p-3">
                   <div className="mb-3 flex items-start gap-3">
@@ -637,14 +644,14 @@ export default function ExpensesPage() {
                   rows={2}
                 />
               </div>
-            </div>
+            </fieldset>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
-                Cancel
+              <Button type="button" variant="outline" disabled={saving} onClick={() => { setDialogOpen(false); if (createAttempt.unknown) void loadData() }}>
+                {createAttempt.unknown ? 'Close and review list' : 'Cancel'}
               </Button>
               <Button type="submit" disabled={saving}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {selectedExpense ? 'Save Changes' : 'Add Expense'}
+                {createAttempt.unknown ? 'Retry original save' : selectedExpense ? 'Save Changes' : 'Add Expense'}
               </Button>
             </DialogFooter>
           </form>

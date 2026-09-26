@@ -7,8 +7,9 @@ import { getExpenses } from '@/services/expenses.service'
 import { getTimeEntries } from '@/services/time-entries.service'
 import { getVendorBills } from '@/services/accounts-payable.service'
 import { getBills } from '@/services/bills.service'
+import { getLegacyPaidInvoices } from '@/services/invoices.service'
 import { reviewWorkRecord } from '@/services/review.service'
-import type { Expense, TimeEntry, Bill, VendorBill } from '@/types/models'
+import type { Expense, TimeEntry, Bill, VendorBill, Invoice } from '@/types/models'
 import { isTimeReserved } from '@/components/TimeBillingDialog'
 import { RecordHistoryDialog } from '@/components/RecordHistoryDialog'
 import { Button } from '@/components/ui/button'
@@ -21,21 +22,24 @@ export default function ReviewPage() {
   const { user } = useAuth()
   const [rows, setRows] = useState<ReviewRow[]>([])
   const [bills, setBills] = useState<(Bill | VendorBill)[]>([])
+  const [legacyInvoices, setLegacyInvoices] = useState<Invoice[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [confirmation, setConfirmation] = useState<(ReviewRow & { action: 'submit' | 'approve' | 'reject' }) | null>(null)
   const [history, setHistory] = useState<ReviewRow | null>(null)
   const canReview = user?.account_type === 'business' && ['OWNER', 'ADMIN'].includes(user.role)
+  const canReviewLegacy = canReview || user?.account_type === 'freelancer'
   const load = useCallback(async () => {
     if (!user) return
     try {
       setError('')
-      const [expenses, time, billRows] = await Promise.all([getExpenses(), user.account_type === 'personal' ? Promise.resolve([]) : getTimeEntries(), user.account_type === 'personal' ? getBills() : getVendorBills()])
+      const [expenses, time, billRows, legacyRows] = await Promise.all([getExpenses(), user.account_type === 'personal' ? Promise.resolve([]) : getTimeEntries(), user.account_type === 'personal' ? getBills() : getVendorBills(), canReviewLegacy ? getLegacyPaidInvoices() : Promise.resolve([])])
       setRows([...expenses.map(record => ({ kind: 'expenses' as const, record })), ...time.filter(entry => !isTimeReserved(entry)).map(record => ({ kind: 'time_entries' as const, record }))].filter(row => ['DRAFT', 'REJECTED', 'SUBMITTED'].includes(row.record.status)))
       setBills(billRows.filter(bill => !['paid', 'cancelled'].includes(bill.status)))
+      setLegacyInvoices(legacyRows)
     } catch { setError('Could not load the review inbox. Try again.') } finally { setLoading(false) }
-  }, [user?.id, user?.organization_id, user?.account_type])
+  }, [user?.id, user?.organization_id, user?.account_type, canReviewLegacy])
   useEffect(() => { void load() }, [load])
   const own = rows.filter(row => row.record.user_id === user?.id && ['DRAFT', 'REJECTED'].includes(row.record.status))
   const pending = rows.filter(row => row.record.status === 'SUBMITTED')
@@ -49,6 +53,7 @@ export default function ReviewPage() {
     <Card><CardHeader><CardTitle>Your captured records ({own.length})</CardTitle></CardHeader><CardContent><ul>{cards(own)}</ul>{!own.length && <p>No drafts or rejected records to review.</p>}</CardContent></Card>
     <Card><CardHeader><CardTitle>Submitted for review ({pending.length})</CardTitle></CardHeader><CardContent><ul>{cards(pending)}</ul>{!pending.length && <p>No submitted records.</p>}</CardContent></Card>
     <Card><CardHeader><CardTitle>Open {user?.account_type === 'personal' ? 'personal' : 'vendor'} bills ({bills.length})</CardTitle></CardHeader><CardContent><p className="text-sm">{bills.filter(bill => bill.due_date < new Date().toISOString().slice(0, 10)).length} past due. Payment records and cancellation are managed on Bills.</p><Button className="mt-3" variant="outline" asChild><Link href="/bills">Review bills</Link></Button></CardContent></Card>
+    {canReviewLegacy && <Card><CardHeader><CardTitle>Historical payments to verify ({legacyInvoices.length})</CardTitle></CardHeader><CardContent><p className="text-sm text-muted-foreground">These invoices were marked Paid without recorded receipts. Review evidence before including them in cash totals.</p><ul>{legacyInvoices.map(invoice => <li key={invoice.id} className="flex flex-wrap items-center justify-between gap-3 border-b py-3"><span>{invoice.invoice_number} · {invoice.total} {invoice.currency}</span><Button variant="outline" size="sm" asChild><Link href={`/invoices/${invoice.id}`}>Review payment evidence</Link></Button></li>)}</ul>{!legacyInvoices.length && <p className="mt-3 text-sm">No historical payments awaiting review.</p>}</CardContent></Card>}
   </>}{history && <RecordHistoryDialog kind={history.kind} id={history.record.id} onClose={() => setHistory(null)} />}
     <Dialog open={!!confirmation} onOpenChange={open => { if (!open && !busy) setConfirmation(null) }}><DialogContent><DialogHeader><DialogTitle>Confirm {confirmation?.action}</DialogTitle><DialogDescription>Check the record before continuing. The status change will be recorded in its history.</DialogDescription></DialogHeader>{confirmation && <div className="rounded border p-3 text-sm"><p className="font-medium">{confirmation.kind === 'expenses' ? (confirmation.record as Expense).description || (confirmation.record as Expense).merchant || 'Expense' : (confirmation.record as TimeEntry).notes || 'Tracked time'}</p><p>{confirmation.kind === 'expenses' ? `${(confirmation.record as Expense).amount} ${(confirmation.record as Expense).currency}` : `${(confirmation.record as TimeEntry).duration_minutes} minutes`} · {confirmation.record.status.toLowerCase()}</p></div>}<Button disabled={busy} onClick={async () => { if (!confirmation) return; setBusy(true); try { await reviewWorkRecord(confirmation.kind, confirmation.record.id, confirmation.action, confirmation.record.updated_at); setConfirmation(null); await load(); toast.success('Review recorded') } catch (error) { toast.error(error instanceof Error ? error.message : 'Could not review record') } finally { setBusy(false) } }}>{busy ? 'Saving…' : 'Confirm'}</Button></DialogContent></Dialog>
   </div>

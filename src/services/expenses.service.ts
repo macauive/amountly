@@ -55,15 +55,12 @@ export async function getExpense(id: string): Promise<Expense | null> {
   return data as Expense
 }
 
-export async function createExpense(input: CreateExpenseInput, requestId?: string): Promise<Expense> {
+export async function createExpense(input: CreateExpenseInput, requestId = crypto.randomUUID()): Promise<Expense> {
   const supabase = getSupabaseClient()
-  const { data, error } = await supabase
-    .from('expenses')
-    .insert({ ...input, ...(requestId ? { id: requestId } : {}) })
-    .select()
-    .single()
-
+  const { error } = await supabase.rpc('create_money_record', { p_kind: 'expenses', p_id: requestId, p_data: input })
   if (error) throw recordError(error.code)
+  const { data, error: readError } = await supabase.from('expenses').select('*').eq('id', requestId).single()
+  if (readError) throw recordError()
   return data as Expense
 }
 

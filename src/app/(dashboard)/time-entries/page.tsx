@@ -48,7 +48,7 @@ import { Badge } from '@/components/ui/badge'
 import { Plus, Clock, Pencil, Trash2, Loader2, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { format, parseISO } from 'date-fns'
-import { formatDateOnly } from '@/lib/date-format'
+import { useDisplayDate } from '@/hooks/useDisplayDate'
 import { captureTimeEntryFromText } from '@/lib/time-ai'
 import { TimeBillingDialog, isTimeReserved } from '@/components/TimeBillingDialog'
 import { useCapability } from '@/hooks/useCapability'
@@ -77,6 +77,7 @@ function getStatusVariant(status: TimeEntryStatus): 'default' | 'secondary' | 'd
 }
 
 export default function TimeEntriesPage() {
+  const formatDateOnly = useDisplayDate()
   const { user } = useAuth()
   const canBillTime = useCapability(Capability.editInvoices)
   const [billingOpen, setBillingOpen] = useState(false)

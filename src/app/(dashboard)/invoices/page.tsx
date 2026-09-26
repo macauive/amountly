@@ -56,7 +56,7 @@ import { Badge } from '@/components/ui/badge'
 import { Plus, FileText, Pencil, Trash2, Loader2, DollarSign, Send, Download, Eye, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { format, addDays } from 'date-fns'
-import { formatDateOnly } from '@/lib/date-format'
+import { useDisplayDate } from '@/hooks/useDisplayDate'
 import {
   canDraftInvoiceReminder,
   captureInvoiceLineFromText,
@@ -87,6 +87,7 @@ interface LineItem {
 }
 
 export default function InvoicesPage() {
+  const formatDateOnly = useDisplayDate()
   const { user } = useAuth()
   const router = useRouter()
   const canCreate = useCapability(Capability.createInvoices)

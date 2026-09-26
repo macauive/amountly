@@ -1,17 +1,31 @@
 import type { Expense, Invoice } from '@/types/models'
+import { escapeCsvValue } from '@/lib/csv'
 
 export type IncomeBasis = 'cash' | 'accrual'
-export function incomeRecords(invoices: Invoice[], year: number, currency: string, basis: IncomeBasis) {
-  const inYear = (date: string) => date.slice(0, 4) === String(year)
+export function reportPeriod(startYear: number, startMonth = 1) {
+  if (!Number.isInteger(startYear) || startYear < 2000 || startYear > 2100 || !Number.isInteger(startMonth) || startMonth < 1 || startMonth > 12) throw new Error('Invalid reporting period')
+  const month = String(startMonth).padStart(2, '0')
+  return { start: `${startYear}-${month}-01`, endExclusive: `${startYear + 1}-${month}-01`, end: new Date(Date.UTC(startYear + 1, startMonth - 1, 0)).toISOString().slice(0,10) }
+}
+export function incomeRecords(invoices: Invoice[], year: number, currency: string, basis: IncomeBasis, startMonth = 1) {
+  const period = reportPeriod(year, startMonth)
+  const inYear = (date: string) => date.slice(0,10) >= period.start && date.slice(0,10) < period.endExclusive
   return invoices.filter(invoice => invoice.currency === currency && !['DRAFT', 'CANCELLED'].includes(invoice.status)).flatMap(invoice => {
     if (basis === 'accrual') return inYear(invoice.issue_date) ? [{ id: invoice.id, invoice_id: invoice.id, name: invoice.invoice_number, date: invoice.issue_date, amount: invoice.total, status: invoice.status, currency }] : []
     return (invoice.payments ?? []).filter(payment => !payment.reversal && inYear(payment.paid_on)).map(payment => ({ id: payment.id, invoice_id: invoice.id, name: invoice.invoice_number, date: payment.paid_on, amount: payment.amount, status: 'RECEIVED', currency }))
   })
 }
-export function expenseRecords(expenses: Expense[], year: number, currency: string) {
-  return expenses.filter(expense => expense.expense_date.slice(0, 4) === String(year) && expense.currency === currency && expense.status !== 'REJECTED')
+export function expenseRecords(expenses: Expense[], year: number, currency: string, startMonth = 1) {
+  const period = reportPeriod(year, startMonth)
+  return expenses.filter(expense => expense.expense_date.slice(0,10) >= period.start && expense.expense_date.slice(0,10) < period.endExclusive && expense.currency === currency && expense.status !== 'REJECTED')
 }
 export function sumMoney(rows: { amount: number }[]) { return rows.reduce((sum, row) => sum + Math.round(Number(row.amount) * 100), 0) / 100 }
+
+export function workspacePeriodCsv(rows: { date: string; type: string; name: string; amount: number; status: string }[], period: ReturnType<typeof reportPeriod>, currency: string, basis: IncomeBasis) {
+  const headers = ['period_start','period_end','currency','income_basis','expense_basis','date','record_type','name','amount','status']
+  return [headers, ...rows.map(row => [period.start,period.end,currency,basis,'captured_record',row.date,row.type,row.name,row.amount,row.status])]
+    .map(row => row.map(escapeCsvValue).join(',')).join('\r\n')
+}
 
 // Reviewed against IRS Revenue Procedure 2025-32 and SSA contribution bases.
 // Illustrative single-filer ordinary income only. No credits, QBI, state taxes,

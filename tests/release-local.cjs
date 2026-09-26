@@ -44,11 +44,11 @@ async function account(type) {
 // Drop a successful response after the database commits, without changing the
 // server request. Tests the actual service's ambiguous-outcome behavior.
 async function responseLossClient(actor) {
-  let target = null
+  let target = null, targetMethod = 'POST'
   const client = createClient(s.API_URL,s.ANON_KEY,{...options,global:{fetch:async(input,init)=>{
     const response=await fetch(input,init)
-    if(target && new URL(typeof input==='string'?input:input.url || String(input)).pathname.endsWith(target) && init?.method==='POST' && response.ok) {
-      target=null
+    if(target && new URL(typeof input==='string'?input:input.url || String(input)).pathname.endsWith(target) && (init?.method || 'GET')===targetMethod && response.ok) {
+      if (targetMethod !== 'GET') target=null
       throw new TypeError('Synthetic lost response')
     }
     return response
@@ -56,38 +56,64 @@ async function responseLossClient(actor) {
   clients.push(client)
   const {data:{session}}=await actor.client.auth.getSession()
   await ok(client.auth.setSession(session),'prepare response-loss session')
-  return {client,dropNext:path=>{target=path}}
+  return {client,dropNext:(path,method='POST')=>{target=path;targetMethod=method},restore:()=>{target=null}}
 }
 async function testResponseLoss() {
   const person=await account('personal'), business=await account('business')
   const personLoss=await responseLossClient(person),businessLoss=await responseLossClient(business)
   const lostBills=services(personLoss.client)('src/services/bills.service.ts')
   const billId=randomUUID(),billInput={user_id:person.user.id,name:'Lost-response bill',payee:'Synthetic payee',amount:15,currency:'USD',category:'other',due_date:'2026-01-01',recurrence:'once'}
-  personLoss.dropNext('/bills')
+  personLoss.dropNext('/rpc/create_money_record')
   await assert.rejects(lostBills.createBill(billInput,billId),/Could not confirm/)
-  await assert.rejects(lostBills.createBill(billInput,billId))
+  assert.equal((await lostBills.createBill(billInput,billId)).id,billId)
+  await assert.rejects(lostBills.createBill({...billInput,amount:16},billId))
   assert.equal((await lostBills.getBills()).filter(b=>b.id===billId).length,1)
   const lostExpenses=services(personLoss.client)('src/services/expenses.service.ts')
   const expenseId=randomUUID(),expenseInput={user_id:person.user.id,expense_date:'2026-01-01',amount:15,currency:'USD',status:'DRAFT'}
-  personLoss.dropNext('/expenses')
+  personLoss.dropNext('/rpc/create_money_record')
   await assert.rejects(lostExpenses.createExpense(expenseInput,expenseId),/Could not confirm/)
-  await assert.rejects(lostExpenses.createExpense(expenseInput,expenseId))
+  assert.equal((await lostExpenses.createExpense(expenseInput,expenseId)).id,expenseId)
+  await assert.rejects(lostExpenses.createExpense({...expenseInput,amount:16},expenseId))
   assert.equal((await lostExpenses.getExpenses()).filter(e=>e.id===expenseId).length,1)
+  const unreadId=randomUUID()
+  personLoss.dropNext('/expenses','GET')
+  await assert.rejects(lostExpenses.createExpense({...expenseInput,amount:17},unreadId),/Could not confirm/)
+  personLoss.restore()
+  assert.equal((await lostExpenses.createExpense({...expenseInput,amount:17},unreadId)).id,unreadId)
+  assert.equal((await lostExpenses.getExpenses()).filter(e=>e.id===unreadId).length,1)
   const api=services(businessLoss.client)('src/services/accounts-payable.service.ts')
   const vendor=await api.createVendor({user_id:business.user.id,organization_id:business.org.id,name:'Loss test supplier'})
   const input={vendor_id:vendor.id,bill_number:'LOSS-1',issue_date:'2026-01-01',due_date:'2026-02-01',tax_rate:0,currency:'USD'}
   const lines=[{description:'Synthetic work',quantity:1,rate:15,amount:15,order:0}]
+  const vendorBillId=randomUUID()
   businessLoss.dropNext('/rpc/save_vendor_bill')
-  await assert.rejects(api.createVendorBill(input,lines),/Could not confirm/)
-  await assert.rejects(api.createVendorBill(input,lines))
+  await assert.rejects(api.createVendorBill(input,lines,vendorBillId),/Could not confirm/)
+  assert.equal((await api.createVendorBill(input,lines,vendorBillId)).id,vendorBillId)
+  await assert.rejects(api.createVendorBill({...input,notes:'Changed'},lines,vendorBillId))
   assert.equal((await api.getVendorBills()).length,1)
-  console.log('PASS: successful bill/expense/vendor saves with deliberately lost responses report uncertainty; retries do not duplicate and reload finds exactly one record')
+  console.log('PASS: bill/expense/vendor saves recover from deliberately lost responses: identical retries return the original record, altered requests fail, exactly one record remains')
 }
 async function main() {
   await testResponseLoss()
   const owner = await account('business'), outsider = await account('business'), freelancer = await account('freelancer'), personal = await account('personal')
   await denied(personal.client.from('users').update({ organization_id: owner.org.id, role: 'OWNER' }).eq('id',personal.user.id), 'cannot self-join another workspace')
   console.log('PASS: real Auth + RLS onboarding for business, freelancer and personal; foreign organization joining denied')
+  const legacyOwner=await account('business')
+  const legacyClient=await ok(legacyOwner.client.from('clients').insert({organization_id:legacyOwner.org.id,name:'Synthetic legacy client'}).select().single(),'create legacy client')
+  const legacyInvoice=await ok(admin.from('invoices').insert({organization_id:legacyOwner.org.id,client_id:legacyClient.id,invoice_number:'LEGACY-QA',issue_date:'2025-01-01',due_date:'2025-02-01',subtotal:50,total:50,currency:'USD',status:'PAID',paid_at:'2025-01-20'}).select().single(),'seed synthetic legacy invoice')
+  const legacyLoss=await responseLossClient(legacyOwner),legacyApi=services(legacyLoss.client)('src/services/invoices.service.ts')
+  const legacyRequest=randomUUID(),legacyReview={action:'record_payment',amount:20,paid_on:'2025-01-15',method:'bank_transfer',reference:'Synthetic remittance',evidence:'Synthetic remittance reviewed for local testing'}
+  assert.equal((await legacyApi.getLegacyPaidInvoices()).length,1)
+  legacyLoss.dropNext('/rpc/review_legacy_payment')
+  await assert.rejects(legacyApi.reviewLegacyPayment(legacyInvoice,legacyReview,legacyRequest),/Could not confirm/)
+  await legacyApi.reviewLegacyPayment(legacyInvoice,legacyReview,legacyRequest)
+  const reconciled=await legacyApi.getInvoice(legacyInvoice.id)
+  assert.equal(reconciled.amount_paid,20);assert.equal(reconciled.balance_due,30)
+  assert.equal(reconciled.legacy_reviews.length,1);assert.equal(reconciled.legacy_reviews[0].original_paid_at.slice(0,10),'2025-01-20')
+  assert.equal((await legacyApi.getLegacyPaidInvoices()).length,0)
+  await denied(outsider.client.from('legacy_payment_reviews').insert({id:randomUUID(),invoice_id:legacyInvoice.id}),'direct review insertion denied')
+  assert.equal((await ok(outsider.client.from('legacy_payment_reviews').select('*'),'foreign reviews hidden')).length,0)
+  console.log('PASS: legacy payment queue, evidence-backed partial receipt, lost-response recovery, preserved history, balance and cross-workspace denial')
   const membership = await ok(owner.client.from('workspace_memberships').select('*').single(), 'read own membership')
   assert.equal(membership.workspace_id,owner.org.id)
   await denied(owner.client.from('workspace_memberships').update({role:'OWNER'}).eq('user_id',outsider.user.id),'cannot forge membership')
@@ -114,6 +140,23 @@ async function main() {
   const vendorBill=await payableApi.createVendorBill(vendorInput,[{description:'Synthetic service',quantity:2,rate:10,amount:20,order:0}])
   assert.equal(Number(vendorBill.total),22)
   await assert.rejects(payableApi.createVendorBill(vendorInput,[{description:'Synthetic service',quantity:2,rate:10,amount:20,order:0}]))
+  const poLoss=await responseLossClient(owner),poApi=services(poLoss.client)('src/services/accounts-payable.service.ts')
+  const poId=randomUUID(),poInput={vendor_id:vendor.id,po_number:'PO-LOCAL-1',date:'2026-01-01',tax_rate:10,currency:'USD'}
+  const poLines=[{description:'Synthetic purchase',quantity:1,rate:15,amount:1,order:0}]
+  poLoss.dropNext('/rpc/save_purchase_order')
+  await assert.rejects(poApi.createPurchaseOrder(poInput,poLines,poId),/Could not confirm/)
+  const po=await poApi.createPurchaseOrder(poInput,poLines,poId)
+  assert.equal(Number(po.total),16.5)
+  assert.equal((await poApi.getPurchaseOrders()).length,1)
+  await poApi.purchaseOrderAction(po,'send')
+  await assert.rejects(poApi.purchaseOrderAction(po,'receive'))
+  const sentPO=(await poApi.getPurchaseOrders())[0]
+  assert.equal(sentPO.status,'sent')
+  await poApi.purchaseOrderAction(sentPO,'receive')
+  await assert.rejects(poApi.purchaseOrderAction((await poApi.getPurchaseOrders())[0],'cancel'))
+  assert.equal((await services(owner.client)('src/services/review.service.ts').getRecordHistory('purchase_orders',po.id)).length,3)
+  assert.equal((await services(outsider.client)('src/services/accounts-payable.service.ts').getPurchaseOrders()).length,0)
+  console.log('PASS: real API atomic purchase order totals, lost-response retry, versioned sent/received transitions, immutable terminal history and tenant isolation')
   await payableApi.markVendorBillPaid(vendorBill,'2026-01-10')
   await payableApi.archiveVendor(vendor.id)
   assert.equal((await payableApi.getVendorBills()).length,1)
@@ -128,7 +171,7 @@ async function main() {
   const expenseApi=services(owner.client)('src/services/expenses.service.ts')
   const expenseId=randomUUID(),expenseInput={user_id:owner.user.id,amount:12,currency:'USD',expense_date:'2026-01-01',status:'DRAFT'}
   let reviewedExpense=await expenseApi.createExpense(expenseInput,expenseId)
-  await assert.rejects(expenseApi.createExpense(expenseInput,expenseId))
+  assert.equal((await expenseApi.createExpense(expenseInput,expenseId)).id,expenseId)
   const reviewApi=services(owner.client)('src/services/review.service.ts')
   await reviewApi.reviewWorkRecord('expenses',expenseId,'submit',reviewedExpense.updated_at)
   reviewedExpense=await expenseApi.getExpense(expenseId)

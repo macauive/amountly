@@ -1,6 +1,7 @@
 import { getSupabaseClient } from '@/lib/supabase'
 import { mapInvoice, serializeInvoiceStatus } from '@/lib/invoice-records'
 import type { Invoice, CreateInvoiceInput, CreateInvoiceLineItemInput, InvoicePayment } from '@/types/models'
+import { recordError, RecordSaveError } from '@/services/review.service'
 
 export interface InvoiceFilters {
   status?: string
@@ -45,12 +46,27 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
   const supabase = getSupabaseClient()
   const { data, error } = await supabase
     .from('invoices')
-    .select('*, client:clients(*), project:projects(*), line_items:invoice_line_items(*), events:invoice_events(*), time_links:invoice_time_links(time_entry_id,released_at)')
+    .select('*, client:clients(*), project:projects(*), line_items:invoice_line_items(*), events:invoice_events(*), legacy_reviews:legacy_payment_reviews(id,action,evidence,original_paid_at,original_total,original_currency,created_at), time_links:invoice_time_links(time_entry_id,released_at)')
     .eq('id', id)
     .single()
 
   if (error) throw new Error('Could not load invoices. Please try again.')
   return data ? mapInvoice({ ...data, payments: await getAllPayments(id) }) : null
+}
+
+export type LegacyPaymentReviewInput = { action: 'reopen'; evidence: string } | {
+  action: 'record_payment'; evidence: string; amount: number; paid_on: string; method: InvoicePayment['method']; reference: string
+}
+
+export async function reviewLegacyPayment(invoice: Pick<Invoice, 'id' | 'updated_at'>, input: LegacyPaymentReviewInput, requestId: string): Promise<void> {
+  const { error } = await getSupabaseClient().rpc('review_legacy_payment', {
+    p_id: requestId, p_invoice_id: invoice.id, p_expected_updated_at: invoice.updated_at, p_data: input,
+  })
+  if (error) throw recordError(error.code)
+}
+
+export async function getLegacyPaidInvoices(): Promise<Invoice[]> {
+  return (await getInvoices({ status: 'PAID' })).filter(invoice => !invoice.payments?.length)
 }
 
 
@@ -78,7 +94,7 @@ function workflowError(code?: string): Error & { code?: string } {
     '22P02': 'Check the invoice fields before retrying.',
     '23514': 'Check the invoice amounts before retrying.',
   }
-  return Object.assign(new Error(messages[code ?? ''] ?? 'The change could not be confirmed. Reload to check its status before retrying.'), {
+  return Object.assign(new RecordSaveError(messages[code ?? ''] ?? 'The change could not be confirmed. Retry the original request to check its status.', recordError(code).outcome), {
     code: code && messages[code] ? code : undefined,
   })
 }

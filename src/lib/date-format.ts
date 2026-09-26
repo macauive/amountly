@@ -16,3 +16,15 @@ export function formatDateOnly(value: string | null | undefined, pattern = 'MMM 
 export function dateInputValue(value: string | null | undefined) {
   return value ? value.slice(0, 10) : ''
 }
+
+export function dateFormatPattern(preference: unknown) {
+  return preference === 'DD/MM/YYYY' ? 'dd/MM/yyyy' : preference === 'YYYY-MM-DD' ? 'yyyy-MM-dd' : 'MM/dd/yyyy'
+}
+
+export function formatPreferredDate(value: string | null | undefined, preference: unknown, includeTime = false) {
+  if (!value) return '-'
+  try {
+    const pattern = dateFormatPattern(preference)
+    return includeTime ? format(parseISO(value), `${pattern} p`) : formatDateOnly(value, pattern)
+  } catch { return '-' }
+}

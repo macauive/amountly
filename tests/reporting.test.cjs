@@ -45,3 +45,38 @@ test('production CSP limits scripts to nonces and backend connections to configu
   assert.throws(()=>csp('test','http://external.example.invalid',false))
   assert.ok(csp('test','http://127.0.0.1:54321',true).includes("'unsafe-eval'"))
 })
+
+test('fiscal report boundaries use the start year and include the last day across leap years',()=>{
+  assert.deepEqual(JSON.parse(JSON.stringify(report.reportPeriod(2023,3))),{start:'2023-03-01',endExclusive:'2024-03-01',end:'2024-02-29'})
+  assert.equal(report.reportPeriod(2025,4).end,'2026-03-31')
+  for(const args of [[1999,1],[2026,0],[2026,13],[2026,1.5],[NaN,1]]) assert.throws(()=>report.reportPeriod(...args))
+})
+test('fiscal cash and issued-income reports use matching expense periods without changing tax quarters',()=>{
+  const rows=[invoice({issue_date:'2025-04-01',payments:[{id:'before',paid_on:'2025-03-31',amount:1},{id:'start',paid_on:'2025-04-01',amount:2},{id:'last',paid_on:'2026-03-31',amount:3},{id:'after',paid_on:'2026-04-01',amount:4},{id:'reversed',paid_on:'2026-01-01',amount:5,reversal:{id:'r'}}]})]
+  assert.equal(report.sumMoney(report.incomeRecords(rows,2025,'USD','cash',4)),5)
+  assert.equal(report.sumMoney(report.incomeRecords(rows,2025,'USD','accrual',4)),100)
+  const expenses=['2025-03-31','2025-04-01','2026-03-31T23:59:00Z','2026-04-01'].map(expense_date=>({expense_date,currency:'USD',amount:10,status:'DRAFT'}))
+  assert.equal(report.sumMoney(report.expenseRecords(expenses,2025,'USD',4)),20)
+  assert.equal(report.taxQuarters(2025)[0].start,'2025-01-01')
+})
+test('saved display preferences format calendar dates without changing their day or ISO input values',()=>{
+  const dates=app('src/lib/date-format.ts')
+  assert.equal(dates.formatPreferredDate('2026-01-01T00:00:00Z','MM/DD/YYYY'),'01/01/2026')
+  assert.equal(dates.formatPreferredDate('2026-09-25','DD/MM/YYYY'),'25/09/2026')
+  assert.equal(dates.formatPreferredDate('2026-09-25','YYYY-MM-DD'),'2026-09-25')
+  assert.equal(dates.formatPreferredDate(null,'DD/MM/YYYY'),'-')
+  assert.equal(dates.dateInputValue('2026-09-25T00:00:00Z'),'2026-09-25')
+  assert.equal(dates.formatPreferredDate('bad','MM/DD/YYYY',true),'-')
+  assert.equal(dates.dateFormatPattern('untrusted-pattern'),'MM/dd/yyyy')
+})
+test('invoice details retain the one-to-one legacy review returned by PostgREST',()=>{
+  const {mapInvoice}=app('src/lib/invoice-records.ts')
+  const review={id:'review',action:'record_payment',evidence:'Synthetic evidence',original_paid_at:'2025-01-20',original_total:50,original_currency:'USD',created_at:'2026-09-26'}
+  assert.equal(mapInvoice({...invoice(),legacy_reviews:review}).legacy_reviews[0].evidence,review.evidence)
+  assert.equal(mapInvoice({...invoice(),legacy_reviews:[review]}).legacy_reviews.length,1)
+  assert.equal(mapInvoice({...invoice(),legacy_reviews:null}).legacy_reviews.length,0)
+})
+test('workspace CSV includes exact fiscal bounds, currency, both accounting bases and formula-safe quoted values',()=>{
+  const csv=report.workspacePeriodCsv([{date:'2025-04-01',type:'income',name:'=1+1,"quoted"',amount:25,status:'RECEIVED'}],report.reportPeriod(2025,4),'USD','cash')
+  assert.equal(csv.split('\r\n')[1], '"2025-04-01","2026-03-31","USD","cash","captured_record","2025-04-01","income","\'=1+1,""quoted""","25","RECEIVED"')
+})

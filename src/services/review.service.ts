@@ -6,11 +6,16 @@ export interface RecordEvent {
   previous_status?: string; next_status?: string; changed_fields: string[]; created_at: string
 }
 
-export function recordError(code?: string): Error {
-  return new Error(code === 'PT409' ? 'This record changed or may be a duplicate. Reload and review before retrying.'
+export class RecordSaveError extends Error {
+  constructor(message: string, readonly outcome: 'rejected' | 'unknown') { super(message) }
+}
+
+export function recordError(code?: string): RecordSaveError {
+  const rejected = !!code && (/^(22|23|42)/.test(code) || code === 'PT409')
+  return new RecordSaveError(code === 'PT409' || code === '23505' ? 'This record changed or may be a duplicate. Reload and review before retrying.'
     : code === '42501' ? 'You do not have permission to change this record.'
-      : code === '22023' ? 'Check the fields and current status before trying again.'
-        : 'Could not confirm the change. Reload to check its status before retrying.')
+      : rejected ? 'Check the fields and current status before trying again.'
+        : 'Could not confirm the change. Retry the original request to check its status.', rejected ? 'rejected' : 'unknown')
 }
 
 export async function reviewWorkRecord(kind: 'expenses' | 'time_entries', id: string, action: 'submit' | 'approve' | 'reject', updatedAt: string) {

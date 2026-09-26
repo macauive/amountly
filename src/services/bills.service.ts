@@ -44,13 +44,10 @@ export async function getBill(id: string): Promise<Bill | null> {
 
 export async function createBill(input: CreateBillInput, id = crypto.randomUUID()): Promise<Bill> {
   const supabase = getSupabaseClient()
-  const { data, error } = await supabase
-    .from('bills')
-    .insert({ ...input, id })
-    .select()
-    .single()
-
+  const { error } = await supabase.rpc('create_money_record', { p_kind: 'bills', p_id: id, p_data: input })
   if (error) throw recordError(error.code)
+  const { data, error: readError } = await supabase.from('bills').select('*').eq('id', id).single()
+  if (readError) throw recordError()
   return data as Bill
 }
 

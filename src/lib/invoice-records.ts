@@ -65,6 +65,8 @@ export function mapInvoice(row: unknown): Invoice {
     payments,
     time_links: Array.isArray(invoice.time_links) ? invoice.time_links : [],
     events: Array.isArray(invoice.events) ? invoice.events : [],
+    legacy_reviews: Array.isArray(invoice.legacy_reviews) ? invoice.legacy_reviews
+      : invoice.legacy_reviews && typeof invoice.legacy_reviews === 'object' ? [invoice.legacy_reviews as NonNullable<Invoice['legacy_reviews']>[number]] : [],
     amount_paid: amountPaid,
     balance_due: balance,
     workflow_version: Number(invoice.workflow_version ?? 0),
