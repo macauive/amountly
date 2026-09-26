@@ -10,6 +10,9 @@
 -- before they have a record in the users table.
 -- ============================================
 
+-- Historical prerequisite: this column used to be created out of band.
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS owner_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
+
 -- 1. Fix set_org_owner trigger function (THE CRITICAL FIX)
 CREATE OR REPLACE FUNCTION set_org_owner()
 RETURNS TRIGGER

@@ -294,16 +294,17 @@ export default function SettingsPage() {
   const handleExport = async (table: string, filename: string) => {
     setExporting(table)
     try {
-      const { data, error } = await supabase
-        .from(table)
-        .select('*')
-        .order('created_at', { ascending: false })
-      if (error) throw new Error(error.message)
-      const rows = (data || []) as Record<string, unknown>[]
+      const rows: Record<string, unknown>[] = []
+      for (let offset = 0; ; offset += 500) {
+        const { data, error } = await supabase.from(table).select('*').order('id').range(offset, offset + 499)
+        if (error) throw new Error('Export failed')
+        rows.push(...((data || []) as Record<string, unknown>[]).map(({ receipt_url, receipt_path, issued_snapshot, ...row }) => row))
+        if (!data || data.length < 500) break
+      }
       downloadCSV(rows, filename)
       toast.success(`Exported ${rows.length} record${rows.length !== 1 ? 's' : ''}`)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : `Failed to export ${table}`)
+      toast.error('Could not export these records. Please try again.')
     } finally {
       setExporting(null)
     }
@@ -311,6 +312,7 @@ export default function SettingsPage() {
 
   // Export items gated by capability
   const exportItems = [
+    { key: 'invoice_payments', label: 'Payments received', file: 'amountly-payments.csv', cap: Capability.viewInvoices },
     { key: 'invoices', label: 'Invoices', file: 'amountly-invoices.csv', cap: Capability.viewInvoices },
     { key: 'invoice_line_items', label: 'Invoice Line Items', file: 'amountly-invoice-lines.csv', cap: Capability.viewInvoices },
     { key: 'expenses', label: 'Expenses', file: 'amountly-expenses.csv', cap: Capability.viewOwnExpenses },

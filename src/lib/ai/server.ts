@@ -13,7 +13,22 @@ export async function authorizeAiRequest(request: Request) {
     throw new AiHttpError(401, 'Sign in to use AI')
   }
   const origin = request.headers.get('origin')
-  if (origin && origin !== new URL(request.url).origin) {
+  const requestUrl = new URL(request.url)
+  // Next's development server may reconstruct a loopback request as localhost.
+  // Accept only the equivalent HTTP loopback origin on the same port in dev.
+  // Host/forwarded-host headers never expand the production origin allowlist.
+  let localDevelopmentOrigin = false
+  if (origin && process.env.NODE_ENV === 'development') {
+    try {
+      const browserUrl = new URL(origin)
+      const loopback = new Set(['localhost', '127.0.0.1', '[::1]'])
+      localDevelopmentOrigin = origin === browserUrl.origin
+        && browserUrl.protocol === 'http:' && requestUrl.protocol === 'http:'
+        && browserUrl.port === requestUrl.port
+        && loopback.has(browserUrl.hostname) && loopback.has(requestUrl.hostname)
+    } catch { /* Malformed origins remain denied. */ }
+  }
+  if (origin && origin !== requestUrl.origin && !localDevelopmentOrigin) {
     throw new AiHttpError(403, 'Request not allowed')
   }
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL

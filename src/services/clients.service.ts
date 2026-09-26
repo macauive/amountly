@@ -11,6 +11,7 @@ export async function getClients(filters?: ClientFilters): Promise<Client[]> {
   let query = supabase
     .from('clients')
     .select('*')
+    .is('archived_at', null)
     .order('name')
 
   if (filters?.organizationId) {
@@ -62,12 +63,14 @@ export async function updateClient(id: string, input: UpdateClientInput): Promis
   return data as Client
 }
 
-export async function deleteClient(id: string): Promise<void> {
+export async function archiveClient(id: string): Promise<void> {
   const supabase = getSupabaseClient()
   const { error } = await supabase
     .from('clients')
-    .delete()
+    .update({ archived_at: new Date().toISOString() })
     .eq('id', id)
+    .select('id')
+    .single()
 
   if (error) throw error
 }

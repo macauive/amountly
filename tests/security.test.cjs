@@ -45,6 +45,7 @@ function harness(options = {}) {
         NEXT_PUBLIC_SUPABASE_URL: 'https://auth.example.invalid',
         NEXT_PUBLIC_SUPABASE_ANON_KEY: 'synthetic-public-test-key',
         OPENAI_API_KEY: 'synthetic-local-test-key',
+        NODE_ENV: options.nodeEnv ?? 'production',
       } },
       fetch: async (_url, init) => {
         calls.provider++
@@ -84,6 +85,30 @@ test('AI denies anonymous, invalid, cross-origin and inactive callers before pai
     assert.equal(response.status, expected)
     assert.equal(h.calls.provider, 0); assert.equal(h.calls.quota, 0)
     assert.equal(response.headers.get('cache-control'), 'no-store')
+  }
+})
+
+test('AI loopback origin compatibility is development-only, same-port, and ignores spoofed hosts', async () => {
+  for (const [nodeEnv, url, origin, expected] of [
+    ['development', 'http://localhost:4174/api/ai', 'http://127.0.0.1:4174', 401],
+    ['development', 'http://localhost:4174/api/ai', 'http://[::1]:4174', 401],
+    ['production', 'http://localhost:4174/api/ai', 'http://127.0.0.1:4174', 403],
+    ['development', 'http://localhost:4174/api/ai', 'http://127.0.0.1:9999', 403],
+    ['development', 'http://localhost:4174/api/ai', 'https://127.0.0.1:4174', 403],
+    ['development', 'http://localhost:4174/api/ai', 'http://evil.invalid:4174', 403],
+    ['development', 'https://example.invalid/api/ai', 'http://127.0.0.1:4174', 403],
+    ['development', 'http://localhost:4174/api/ai', 'http://127.0.0.1:4174/path', 403],
+    ['development', 'http://localhost:4174/api/ai', 'null', 403],
+    ['production', 'https://example.invalid/api/ai', 'https://example.invalid', 401],
+  ]) {
+    const h = harness({ nodeEnv, invalidToken: true })
+    const response = await h.load('src/app/api/ai/route.ts').POST(new Request(url, {
+      method: 'POST', headers: { origin, authorization: 'Bearer synthetic_test_token_000000000000',
+        host: origin, 'x-forwarded-host': origin, 'content-type': 'application/json' }, body: '{}',
+    }))
+    assert.equal(response.status, expected, `${nodeEnv}: ${origin}`)
+    assert.equal(h.calls.auth, expected === 401 ? 1 : 0)
+    assert.equal(h.calls.provider, 0); assert.equal(h.calls.quota, 0)
   }
 })
 
@@ -188,4 +213,26 @@ test('byte limit applies to streamed UTF-8 bodies without a Content-Length', asy
   const { readBoundedJson } = harness().load('src/lib/http.ts')
   const message = new Response(JSON.stringify({ text: 'é'.repeat(50) }))
   await assert.rejects(readBoundedJson(message, 80), error => error.status === 413)
+})
+
+
+test('invoice records preserve issued states, partial balances, currency and issued client snapshot', () => {
+  const { load } = harness()
+  const { mapInvoice, normalizeInvoiceStatus } = load('src/lib/invoice-records.ts')
+  for (const state of ['DRAFT','SENT','PAID','OVERDUE','CANCELLED']) {
+    assert.equal(normalizeInvoiceStatus(state),state)
+    assert.equal(normalizeInvoiceStatus(state.toLowerCase()),state)
+  }
+  const invoice = mapInvoice({ id:'synthetic',status:'SENT',total:300,currency:'EUR',due_date:'2099-01-01',
+    client:{name:'Changed name'},issued_snapshot:{client:{name:'Original name'}},
+    payments:[{amount:'100.00'}] })
+  assert.equal(invoice.status,'SENT')
+  assert.equal(invoice.balance_due,200)
+  assert.equal(invoice.amount_paid,100)
+  assert.equal(invoice.currency,'EUR')
+  assert.equal(invoice.client.name,'Original name')
+  assert.equal(mapInvoice({status:'SENT',total:100,due_date:'2000-01-01'}).status,'OVERDUE')
+  assert.equal(mapInvoice({status:'PAID',total:100}).balance_due,0)
+  assert.equal(mapInvoice({status:'CANCELLED',total:100}).balance_due,0)
+  assert.throws(() => normalizeInvoiceStatus('unexpected'))
 })

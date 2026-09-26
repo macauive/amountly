@@ -1,5 +1,7 @@
 'use client'
 
+import { format } from 'date-fns'
+
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAppState } from '@/contexts/AppStateContext'
@@ -169,13 +171,13 @@ function getPersonalStats(bills: Bill[], expenses: Expense[]): DashboardStat[] {
 }
 
 function getWorkStats(accountType: AccountType, data: WorkDashboardData): DashboardStat[] {
+  const invoiceMoney = (amount: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: data.invoices[0]?.currency ?? 'USD' }).format(amount)
   const now = new Date()
   const monthStart = startOfMonth(now)
   const monthEnd = endOfMonth(now)
 
-  const paidInvoicesThisMonth = data.invoices.filter((invoice) => {
-    if (invoice.status !== InvoiceStatus.paid || !invoice.paid_at) return false
-    const paidAt = parseISO(invoice.paid_at)
+  const paymentsThisMonth = data.invoices.flatMap(invoice => invoice.payments ?? []).filter(payment => {
+    const paidAt = parseISO(payment.paid_on)
     return !isBefore(paidAt, monthStart) && !isAfter(paidAt, monthEnd)
   })
   const openInvoices = data.invoices.filter((invoice) =>
@@ -201,8 +203,8 @@ function getWorkStats(accountType: AccountType, data: WorkDashboardData): Dashbo
     }
     return sum
   }, 0)
-  const revenueTotal = paidInvoicesThisMonth.reduce((sum, invoice) => sum + invoice.total, 0)
-  const openInvoiceTotal = openInvoices.reduce((sum, invoice) => sum + invoice.total, 0)
+  const revenueTotal = paymentsThisMonth.reduce((sum, payment) => sum + payment.amount, 0)
+  const openInvoiceTotal = openInvoices.reduce((sum, invoice) => sum + (invoice.balance_due ?? invoice.total), 0)
   const expenseTotal = expensesThisMonth.reduce((sum, expense) => sum + expense.amount, 0)
   const vendorBillTotal = openVendorBills.reduce((sum, bill) => sum + bill.total, 0)
 
@@ -216,15 +218,15 @@ function getWorkStats(accountType: AccountType, data: WorkDashboardData): Dashbo
         icon: Clock,
       },
       {
-        title: 'Revenue MTD',
-        value: formatCurrency(revenueTotal),
-        change: `${paidInvoicesThisMonth.length} paid invoices`,
+        title: 'Cash received MTD',
+        value: invoiceMoney(revenueTotal),
+        change: `${paymentsThisMonth.length} recorded payments`,
         trend: revenueTotal > 0 ? 'up' : 'down',
         icon: DollarSign,
       },
       {
         title: 'Outstanding',
-        value: formatCurrency(openInvoiceTotal),
+        value: invoiceMoney(openInvoiceTotal),
         change: `${openInvoices.length} open invoices`,
         trend: openInvoices.length > 0 ? 'up' : 'down',
         icon: FileText,
@@ -241,15 +243,15 @@ function getWorkStats(accountType: AccountType, data: WorkDashboardData): Dashbo
 
   return [
     {
-      title: 'Revenue MTD',
-      value: formatCurrency(revenueTotal),
-      change: `${paidInvoicesThisMonth.length} paid invoices`,
+      title: 'Cash received MTD',
+      value: invoiceMoney(revenueTotal),
+      change: `${paymentsThisMonth.length} recorded payments`,
       trend: revenueTotal > 0 ? 'up' : 'down',
       icon: DollarSign,
     },
     {
       title: 'Open Invoices',
-      value: formatCurrency(openInvoiceTotal),
+      value: invoiceMoney(openInvoiceTotal),
       change: `${openInvoices.length} sent or overdue`,
       trend: openInvoices.length > 0 ? 'up' : 'down',
       icon: FileText,
@@ -918,7 +920,7 @@ export default function DashboardPage() {
         if (isMounted) setDashboardAiInsights(insights)
       } catch (error) {
         if (isMounted) setDashboardAiInsights(null)
-        console.error('Failed to load dashboard AI insights:', error)
+        // Optional AI may be unavailable; deterministic figures remain usable.
       }
     }
 
@@ -943,7 +945,9 @@ export default function DashboardPage() {
     }
   }
 
-  const stats = getStatsForAccountType()
+  const multipleInvoiceCurrencies = new Set(workDashboardData.invoices.map(invoice => invoice.currency)).size > 1
+  const stats = getStatsForAccountType().map(stat => multipleInvoiceCurrencies && (stat.title === 'Cash received MTD' || stat.title === 'Open Invoices' || stat.title === 'Outstanding')
+    ? { ...stat, value: 'Multiple currencies', change: 'Review balances on each invoice' } : stat)
   const quickActions = getQuickActions(accountType)
 
   const recentActivities =
@@ -1016,11 +1020,50 @@ export default function DashboardPage() {
         </p>
       </div>
 
+      <p className="text-sm text-muted-foreground">{format(new Date(), 'MMMM yyyy')} · Cash received includes recorded payments only.</p>
+      {/* Stats */}
+      {personalDashboardError && (
+        <Card>
+          <CardContent className="py-4 text-sm text-destructive">
+            {personalDashboardError}
+          </CardContent>
+        </Card>
+      )}
+
+      {stats.length > 0 ? (
+        <div className={`grid grid-cols-1 md:grid-cols-2 ${stats.length > 2 ? 'lg:grid-cols-4' : ''} gap-6`}>
+          {stats.map((stat, index) => (
+            <Card key={index}>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">{stat.title}</CardTitle>
+                <stat.icon className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{stat.value}</div>
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  {stat.trend === 'up' ? (
+                    <TrendingUp className="h-3 w-3 text-green-500" />
+                  ) : (
+                    <TrendingDown className="h-3 w-3 text-red-500" />
+                  )}
+                  {stat.change}
+                </p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
+      {accountType !== AccountType.personal && <Card><CardHeader><CardTitle>Needs attention</CardTitle></CardHeader><CardContent className="flex flex-wrap gap-3">
+        <Button variant="outline" onClick={() => router.push('/invoices')}>{workDashboardData.invoices.filter(i => i.status === InvoiceStatus.overdue).length} overdue invoices</Button>
+        <Button variant="outline" onClick={() => router.push('/invoices')}>{workDashboardData.invoices.filter(i => i.status === InvoiceStatus.draft).length} invoice drafts</Button>
+        <Button variant="outline" onClick={() => router.push('/expenses')}>{workDashboardData.expenses.filter(e => e.status === ExpenseStatus.draft).length} expense drafts to review</Button>
+      </CardContent></Card>}
       <Card>
         <CardHeader>
           <CardTitle className="text-lg flex items-center gap-2">
             <FileText className="h-5 w-5" />
-            Monthly Summary
+            {dashboardAiInsights ? 'AI suggestions' : 'Suggested next steps'}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -1124,39 +1167,6 @@ export default function DashboardPage() {
           </div>
         </CardContent>
       </Card>
-
-      {/* Stats */}
-      {personalDashboardError && (
-        <Card>
-          <CardContent className="py-4 text-sm text-destructive">
-            {personalDashboardError}
-          </CardContent>
-        </Card>
-      )}
-
-      {stats.length > 0 ? (
-        <div className={`grid grid-cols-1 md:grid-cols-2 ${stats.length > 2 ? 'lg:grid-cols-4' : ''} gap-6`}>
-          {stats.map((stat, index) => (
-            <Card key={index}>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">{stat.title}</CardTitle>
-                <stat.icon className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">{stat.value}</div>
-                <p className="text-xs text-muted-foreground flex items-center gap-1">
-                  {stat.trend === 'up' ? (
-                    <TrendingUp className="h-3 w-3 text-green-500" />
-                  ) : (
-                    <TrendingDown className="h-3 w-3 text-red-500" />
-                  )}
-                  {stat.change}
-                </p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      ) : null}
 
       {/* Recent Activity & Quick Stats */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

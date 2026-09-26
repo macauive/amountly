@@ -28,6 +28,7 @@ import {
   Package,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { Input } from '@/components/ui/input'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import {
@@ -70,6 +71,7 @@ export default function DashboardLayout({
   const { visibleTabs, organization } = useAppState()
   const { theme, setTheme } = useTheme()
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [mobileOpen, setMobileOpen] = useState(false)
   const [dashboardSearchQuery, setDashboardSearchQuery] = useState('')
 
   useEffect(() => {
@@ -109,7 +111,7 @@ export default function DashboardLayout({
   }
 
   const getActiveTab = (): TabId | null => {
-    const tab = visibleTabs.find((t) => t.path === pathname)
+    const tab = visibleTabs.find((t) => t.path === pathname || pathname.startsWith(`${t.path}/`))
     return tab?.id ?? null
   }
 
@@ -136,15 +138,7 @@ export default function DashboardLayout({
 
   const showDashboardSearch = pathname === '/dashboard'
 
-  return (
-    <div className="flex h-screen w-full">
-      {/* Sidebar */}
-      <aside
-        className={cn(
-          'shrink-0 border-r bg-sidebar flex flex-col overflow-hidden transition-all duration-300 ease-in-out',
-          sidebarOpen ? 'w-64' : 'w-0 border-r-0'
-        )}
-      >
+  const sidebarContent = (
         <div className="w-64 flex flex-col h-full">
           <div className="flex items-center gap-2 px-4 py-4 border-b">
             <AmountlyLogo className="h-8 w-8" />
@@ -155,31 +149,31 @@ export default function DashboardLayout({
               </span>
             </div>
           </div>
-          <nav className="flex-1 overflow-auto p-2">
-            <div className="text-xs font-medium text-muted-foreground px-2 py-2">
-              Navigation
-            </div>
-            <ul className="space-y-1">
-              {visibleTabs.map((tab) => {
-                const Icon = iconMap[tab.icon] || LayoutDashboard
-                return (
-                  <li key={tab.id}>
-                    <button
-                      onClick={() => router.push(tab.path)}
-                      className={cn(
-                        'flex items-center gap-3 w-full rounded-md px-2 py-2 text-sm transition-colors',
-                        'hover:bg-accent hover:text-accent-foreground',
-                        activeTab === tab.id &&
-                          'bg-accent text-accent-foreground font-medium'
-                      )}
-                    >
-                      <Icon className="h-4 w-4" />
-                      <span>{tab.label}</span>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
+          <nav aria-label="Main navigation" className="flex-1 overflow-auto p-2">
+            {[
+              { label: 'Overview', ids: ['home'] },
+              { label: 'Money in', ids: ['invoices'] },
+              { label: 'Money out', ids: ['bills', 'expenses'] },
+              { label: 'Contacts', ids: ['clients'] },
+              { label: 'Work', ids: ['projects', 'time'] },
+              { label: 'Reports & taxes', ids: ['tax', 'accounting'] },
+              { label: 'Workspace', ids: ['team', 'payroll', 'inventory', 'settings'] },
+            ].map(group => {
+              const tabs = group.ids.flatMap(id => visibleTabs.filter(tab => tab.id === id))
+              if (!tabs.length) return null
+              return <div key={group.label} className="mb-3">
+                <div className="text-xs font-medium text-muted-foreground px-2 py-2">{group.label}</div>
+                <ul className="space-y-1">{tabs.map(tab => {
+                  const Icon = iconMap[tab.icon] || LayoutDashboard
+                  return <li key={tab.id}><button
+                    onClick={() => { router.push(tab.path); setMobileOpen(false) }}
+                    aria-current={activeTab === tab.id ? 'page' : undefined}
+                    className={cn('flex items-center gap-3 w-full rounded-md px-2 py-2 text-sm transition-colors hover:bg-accent hover:text-accent-foreground', activeTab === tab.id && 'bg-accent text-accent-foreground font-medium')}>
+                    <Icon className="h-4 w-4" /><span>{tab.id === 'home' ? 'Overview' : tab.label}</span>
+                  </button></li>
+                })}</ul>
+              </div>
+            })}
           </nav>
           <div className="p-4 border-t">
             <Button
@@ -197,16 +191,34 @@ export default function DashboardLayout({
             </Button>
           </div>
         </div>
+  )
+
+  return (
+    <div className="flex h-screen w-full">
+      {/* Sidebar */}
+      <aside
+        className={cn(
+          'hidden md:flex shrink-0 border-r bg-sidebar flex-col overflow-hidden transition-all duration-300 ease-in-out',
+          sidebarOpen ? 'w-64' : 'w-0 border-r-0'
+        )}
+      >
+        {sidebarContent}
       </aside>
 
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent side="left" className="w-64 p-0">
+          <SheetHeader className="sr-only"><SheetTitle>Navigation</SheetTitle><SheetDescription>Choose an area of your workspace.</SheetDescription></SheetHeader>
+          {sidebarContent}
+        </SheetContent>
+      </Sheet>
       {/* Main content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
         <header className="h-14 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 shrink-0">
           <div className="flex h-full items-center gap-4 px-4">
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
+              onClick={() => { if (window.matchMedia('(max-width: 767px)').matches) setMobileOpen(true); else setSidebarOpen(!sidebarOpen) }}
               className="h-7 w-7"
             >
               <PanelLeft className="h-4 w-4" />

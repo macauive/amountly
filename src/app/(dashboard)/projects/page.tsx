@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
-import { getProjects, createProject, updateProject, deleteProject } from '@/services/projects.service'
+import { getProjects, createProject, updateProject, archiveProject } from '@/services/projects.service'
 import { getClients } from '@/services/clients.service'
 import type { Project, Client } from '@/types/models'
 import { BillingModel, billingModelLabels } from '@/types/enums'
@@ -161,13 +161,13 @@ export default function ProjectsPage() {
     if (!selectedProject) return
 
     try {
-      await deleteProject(selectedProject.id)
-      toast.success('Project deleted')
+      await archiveProject(selectedProject.id)
+      toast.success('Project archived')
       setDeleteDialogOpen(false)
       setSelectedProject(null)
       loadData()
     } catch (error) {
-      toast.error('Failed to delete project')
+      toast.error('Failed to archive project')
     }
   }
 
@@ -416,15 +416,15 @@ export default function ProjectsPage() {
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Project</AlertDialogTitle>
+            <AlertDialogTitle>Archive Project</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete &quot;{selectedProject?.name}&quot;? This will also delete all associated tasks and time entries.
+              Are you sure you want to archive &quot;{selectedProject?.name}&quot;? Existing tasks, time entries, and invoices will be preserved.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
-              Delete
+              Archive
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

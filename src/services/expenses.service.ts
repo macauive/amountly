@@ -121,11 +121,21 @@ export async function uploadReceipt(file: File): Promise<string> {
 
   if (error) throw error
 
-  const { data, error: signedUrlError } = await supabase.storage
-    .from('receipts')
-    .createSignedUrl(filePath, 60 * 60 * 24 * 7)
+  return filePath
+}
 
-  if (signedUrlError) throw signedUrlError
-
+export async function getReceiptUrl(expense: Expense): Promise<string> {
+  const supabase = getSupabaseClient()
+  let path = expense.receipt_path
+  if (!path && expense.receipt_url) {
+    const legacy = new URL(expense.receipt_url)
+    const trusted = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL!)
+    const prefix = '/storage/v1/object/sign/receipts/'
+    if (legacy.origin !== trusted.origin || !legacy.pathname.startsWith(prefix)) throw new Error('This receipt reference is not supported.')
+    path = decodeURIComponent(legacy.pathname.slice(prefix.length))
+  }
+  if (!path || path.includes('..') || path.startsWith('/') || path.includes('\\')) throw new Error('No valid receipt is attached.')
+  const { data, error } = await supabase.storage.from('receipts').createSignedUrl(path, 60)
+  if (error) throw new Error('Could not open this receipt. Check your access and try again.')
   return data.signedUrl
 }

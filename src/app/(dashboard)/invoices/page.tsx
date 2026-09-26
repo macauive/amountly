@@ -2,13 +2,15 @@
 
 import { useState, useEffect, useRef } from 'react'
 import dynamic from 'next/dynamic'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { useCapability } from '@/hooks/useCapability'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAppState } from '@/contexts/AppStateContext'
-import { getInvoices, getInvoice, createInvoice, updateInvoice, deleteInvoice, generateInvoiceNumber } from '@/services/invoices.service'
+import { getInvoices, getInvoice, saveInvoiceDraft, invoiceAction } from '@/services/invoices.service'
 import { getClients } from '@/services/clients.service'
-import { getTimeEntries } from '@/services/time-entries.service'
-import type { Invoice, Client, CreateInvoiceInput, CreateInvoiceLineItemInput, TimeEntry } from '@/types/models'
-import { AccountType, InvoiceStatus, invoiceStatusLabels } from '@/types/enums'
+import type { Invoice, Client, CreateInvoiceInput, CreateInvoiceLineItemInput } from '@/types/models'
+import { AccountType, Capability, InvoiceStatus, invoiceStatusLabels } from '@/types/enums'
 
 // Load PDF utilities client-side only (react-pdf doesn't support SSR)
 const PDFPreviewDialog = dynamic(() => import('@/components/PDFPreviewDialog'), { ssr: false })
@@ -58,9 +60,7 @@ import { formatDateOnly } from '@/lib/date-format'
 import {
   canDraftInvoiceReminder,
   captureInvoiceLineFromText,
-  draftInvoiceLinesFromTimeEntries,
   draftInvoiceReminder,
-  getInvoiceableTimeEntries,
   type InvoiceReminderDraft,
 } from '@/lib/invoice-ai'
 
@@ -88,10 +88,15 @@ interface LineItem {
 
 export default function InvoicesPage() {
   const { user } = useAuth()
+  const router = useRouter()
+  const canCreate = useCapability(Capability.createInvoices)
+  const canEdit = useCapability(Capability.editInvoices)
+  const canSend = useCapability(Capability.sendInvoices)
+  const canDelete = useCapability(Capability.deleteInvoices)
+  const draftId = useRef('')
   const { organization } = useAppState()
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [clients, setClients] = useState<Client[]>([])
-  const [timeEntries, setTimeEntries] = useState<TimeEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -106,7 +111,6 @@ export default function InvoicesPage() {
   const [reminderDraft, setReminderDraft] = useState<InvoiceReminderDraft | null>(null)
   const [lineCaptureText, setLineCaptureText] = useState('')
   const [lineCaptureSummary, setLineCaptureSummary] = useState<string | null>(null)
-  const [timeDraftSummary, setTimeDraftSummary] = useState<string | null>(null)
   const lineCaptureTextareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   const [formData, setFormData] = useState({
@@ -131,7 +135,7 @@ export default function InvoicesPage() {
   const loadData = async () => {
     try {
       setError(null)
-      const [invoicesData, clientsData, timeEntriesData] = await Promise.all([
+      const [invoicesData, clientsData] = await Promise.all([
         getInvoices({
           userId: user?.id,
           organizationId: user?.organization_id,
@@ -140,13 +144,14 @@ export default function InvoicesPage() {
           userId: user?.id,
           organizationId: user?.organization_id,
         }),
-        getTimeEntries(),
       ])
       setInvoices(invoicesData)
       setClients(clientsData)
-      setTimeEntries(timeEntriesData)
+      const editId = new URLSearchParams(window.location.search).get('edit')
+      const editInvoice = invoicesData.find(invoice => invoice.id === editId)
+      if (editInvoice) await openEditDialog(editInvoice)
     } catch (err) {
-      console.error('Failed to load invoices data:', err)
+      // Keep provider details out of the browser console.
       const errorMessage = err instanceof Error ? err.message : 'Failed to load data'
       setError(errorMessage)
       toast.error(errorMessage)
@@ -157,7 +162,8 @@ export default function InvoicesPage() {
 
   const openCreateDialog = async () => {
     setSelectedInvoice(null)
-    const invoiceNumber = await generateInvoiceNumber()
+    draftId.current = crypto.randomUUID()
+    const invoiceNumber = ''
     setFormData({
       client_id: '',
       invoice_number: invoiceNumber,
@@ -169,17 +175,19 @@ export default function InvoicesPage() {
     setLineItems([{ description: '', quantity: 1, rate: 0, amount: 0 }])
     setLineCaptureText('')
     setLineCaptureSummary(null)
-    setTimeDraftSummary(null)
     setDialogOpen(true)
   }
 
-  const openEditDialog = (invoice: Invoice) => {
+  const openEditDialog = async (row: Invoice) => {
+    let invoice: Invoice | null
+    try { invoice = await getInvoice(row.id) } catch { toast.error('Could not load the draft. Try again.'); return }
+    if (!invoice || invoice.status !== InvoiceStatus.draft) { toast.error('Only drafts can be edited.'); return }
     setSelectedInvoice(invoice)
     setFormData({
       client_id: invoice.client_id || '',
       invoice_number: invoice.invoice_number || '',
-      issue_date: invoice.issue_date,
-      due_date: invoice.due_date,
+      issue_date: invoice.issue_date.slice(0, 10),
+      due_date: invoice.due_date.slice(0, 10),
       tax_rate: String(invoice.tax_rate ?? 0),
       notes: invoice.notes || '',
     })
@@ -198,7 +206,6 @@ export default function InvoicesPage() {
     )
     setLineCaptureText('')
     setLineCaptureSummary(null)
-    setTimeDraftSummary(null)
     setDialogOpen(true)
   }
 
@@ -249,34 +256,6 @@ export default function InvoicesPage() {
     }
   }
 
-  const handleDraftFromTime = async () => {
-    try {
-      setTimeDraftSummary('Asking Amountly AI...')
-      const draft = await draftInvoiceLinesFromTimeEntries(timeEntries, Number(user?.hourly_rate ?? 0))
-      if (draft.lineItems.length === 0) {
-        setTimeDraftSummary(draft.summary)
-        return
-      }
-
-      const hasOnlyEmptyLine =
-        lineItems.length === 1 &&
-        !lineItems[0].description &&
-        lineItems[0].quantity === 1 &&
-        lineItems[0].rate === 0
-
-      setLineItems(hasOnlyEmptyLine ? draft.lineItems : [...lineItems, ...draft.lineItems])
-      setTimeDraftSummary(draft.summary)
-
-      if (draft.clientId && !formData.client_id && clients.some(client => client.id === draft.clientId)) {
-        setFormData({ ...formData, client_id: draft.clientId })
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI time draft failed'
-      setTimeDraftSummary(message)
-      toast.error(message)
-    }
-  }
-
   const calculateTotals = (taxRateOverride?: number) => {
     const subtotal = lineItems.reduce((sum, item) => sum + item.amount, 0)
     const taxRate = taxRateOverride ?? (parseFloat(formData.tax_rate) || 0)
@@ -308,6 +287,7 @@ export default function InvoicesPage() {
         user_id: user?.account_type === AccountType.business ? undefined : user?.id,
         organization_id: user?.organization_id,
         client_id: formData.client_id,
+        project_id: selectedInvoice?.project_id,
         invoice_number: invoiceNumber.trim() || undefined,
         issue_date: issueDate,
         due_date: dueDate,
@@ -315,7 +295,7 @@ export default function InvoicesPage() {
         tax_rate: taxRate,
         tax_amount: taxAmount,
         total,
-        currency: 'USD',
+        currency: selectedInvoice?.currency ?? 'USD',
         status: InvoiceStatus.draft,
         notes: notes || undefined,
       }
@@ -330,20 +310,12 @@ export default function InvoicesPage() {
           order: index,
         }))
 
-      if (selectedInvoice) {
-        await updateInvoice(selectedInvoice.id, {
-          ...invoiceData,
-          invoice_number: invoiceNumber.trim() || undefined,
-        })
-        toast.success('Invoice updated')
-      } else {
-        await createInvoice(invoiceData, lineItemsData)
-        toast.success('Invoice created')
-      }
+      const id = await saveInvoiceDraft(selectedInvoice?.id ?? draftId.current, invoiceData, lineItemsData, selectedInvoice?.updated_at)
+      toast.success(selectedInvoice ? 'Draft updated' : 'Draft created')
       setDialogOpen(false)
-      loadData()
+      router.push(`/invoices/${id}`)
     } catch (error) {
-      console.error('Failed to save invoice:', error)
+      // Display only the service's safe error.
       toast.error(error instanceof Error ? error.message : 'Failed to save invoice')
     } finally {
       setSaving(false)
@@ -354,23 +326,13 @@ export default function InvoicesPage() {
     if (!selectedInvoice) return
 
     try {
-      await deleteInvoice(selectedInvoice.id)
+      await invoiceAction(selectedInvoice, 'delete')
       toast.success('Invoice deleted')
       setDeleteDialogOpen(false)
       setSelectedInvoice(null)
       loadData()
     } catch (error) {
       toast.error('Failed to delete invoice')
-    }
-  }
-
-  const handleStatusChange = async (invoice: Invoice, newStatus: InvoiceStatus) => {
-    try {
-      await updateInvoice(invoice.id, { status: newStatus })
-      toast.success('Invoice status updated')
-      loadData()
-    } catch (error) {
-      toast.error('Failed to update status')
     }
   }
 
@@ -423,9 +385,15 @@ export default function InvoicesPage() {
   }
 
   // Calculate totals
-  const totalOutstanding = invoices
+  const outstandingInvoices = invoices
     .filter(i => i.status === InvoiceStatus.sent || i.status === InvoiceStatus.overdue)
-    .reduce((sum, i) => sum + i.total, 0)
+
+
+  const outstandingByCurrency = outstandingInvoices.reduce<Record<string, number>>((totals, invoice) => {
+    totals[invoice.currency] = (totals[invoice.currency] ?? 0) + (invoice.balance_due ?? invoice.total)
+    return totals
+  }, {})
+  const outstandingLabel = Object.entries(outstandingByCurrency).map(([currency, amount]) => new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount)).join(' · ') || '$0.00'
 
   if (loading) {
     return (
@@ -453,7 +421,7 @@ export default function InvoicesPage() {
   }
 
   const { subtotal, taxAmount, total } = calculateTotals()
-  const invoiceableTimeEntries = getInvoiceableTimeEntries(timeEntries)
+  const invoiceMoney = (amount: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: selectedInvoice?.currency ?? 'USD' }).format(amount)
 
   return (
     <div className="p-6 space-y-6">
@@ -462,7 +430,7 @@ export default function InvoicesPage() {
           <h1 className="text-2xl font-bold">Invoices</h1>
           <p className="text-muted-foreground">Create and manage your invoices</p>
         </div>
-        <Button onClick={openCreateDialog} className="gap-2">
+        <Button disabled={!canCreate} onClick={openCreateDialog} className="gap-2">
           <Plus className="w-4 h-4" />
           New Invoice
         </Button>
@@ -483,7 +451,7 @@ export default function InvoicesPage() {
             <CardTitle className="text-sm font-medium">Outstanding</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${totalOutstanding.toFixed(2)}</div>
+            <div className="text-2xl font-bold">{outstandingLabel}</div>
           </CardContent>
         </Card>
         <Card>
@@ -514,7 +482,7 @@ export default function InvoicesPage() {
             <FileText className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
             <p className="text-muted-foreground">No invoices yet</p>
             <p className="text-sm text-muted-foreground">Create your first invoice to get started</p>
-            <Button onClick={openCreateDialog} className="mt-4 gap-2">
+            <Button disabled={!canCreate} onClick={openCreateDialog} className="mt-4 gap-2">
               <Plus className="w-4 h-4" />
               New Invoice
             </Button>
@@ -537,6 +505,7 @@ export default function InvoicesPage() {
                   <TableHead>Issue Date</TableHead>
                   <TableHead>Due Date</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
+                  <TableHead className="text-right">Balance due</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -544,28 +513,28 @@ export default function InvoicesPage() {
               <TableBody>
                 {invoices.map((invoice) => (
                   <TableRow key={invoice.id}>
-                    <TableCell className="font-medium">{invoice.invoice_number}</TableCell>
+                    <TableCell className="font-medium"><Link className="underline underline-offset-4" href={`/invoices/${invoice.id}`}>{invoice.invoice_number}</Link></TableCell>
                     <TableCell>{invoice.client?.name || '-'}</TableCell>
                     <TableCell>{formatDateOnly(invoice.issue_date)}</TableCell>
                     <TableCell>{formatDateOnly(invoice.due_date)}</TableCell>
                     <TableCell className="text-right font-medium">
                       <span className="flex items-center justify-end gap-1">
-                        <DollarSign className="w-3 h-3" />
-                        {invoice.total.toFixed(2)}
+                        {new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency }).format(invoice.total)}
                       </span>
                     </TableCell>
+                    <TableCell className="text-right">{new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency }).format(invoice.balance_due ?? invoice.total)}</TableCell>
                     <TableCell>
                       <Badge variant={getStatusVariant(invoice.status)}>
-                        {invoiceStatusLabels[invoice.status]}
+                        {(invoice.amount_paid ?? 0) > 0 && invoice.status === InvoiceStatus.sent ? 'Partially paid' : invoiceStatusLabels[invoice.status]}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      {invoice.status === InvoiceStatus.draft && (
+                      {invoice.status === InvoiceStatus.draft && canSend && (
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleStatusChange(invoice, InvoiceStatus.sent)}
-                          title="Mark as Sent"
+                          onClick={() => router.push(`/invoices/${invoice.id}`)}
+                          title="Review and issue invoice"
                         >
                           <Send className="w-4 h-4" />
                         </Button>
@@ -605,13 +574,16 @@ export default function InvoicesPage() {
                         variant="ghost"
                         size="icon"
                         onClick={() => openEditDialog(invoice)}
-                        title="Edit Invoice"
+                        title="Edit draft"
+                        disabled={!canEdit || invoice.status !== InvoiceStatus.draft}
                       >
                         <Pencil className="w-4 h-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
+                        aria-label="Delete draft"
+                        disabled={!canDelete || invoice.status !== InvoiceStatus.draft}
                         onClick={() => {
                           setSelectedInvoice(invoice)
                           setDeleteDialogOpen(true)
@@ -639,7 +611,7 @@ export default function InvoicesPage() {
           </DialogHeader>
           <form onSubmit={handleSubmit}>
             <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="invoice_number">Invoice Number</Label>
                   <Input
@@ -660,7 +632,7 @@ export default function InvoicesPage() {
                     value={formData.client_id}
                     onValueChange={(value) => setFormData({ ...formData, client_id: value })}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id="client">
                       <SelectValue placeholder="Select a client" />
                     </SelectTrigger>
                   <SelectContent>
@@ -677,7 +649,7 @@ export default function InvoicesPage() {
                   </Select>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="issue_date">Issue Date</Label>
                   <Input
@@ -706,6 +678,7 @@ export default function InvoicesPage() {
                     id="tax_rate"
                     name="tax_rate"
                     type="number"
+                    min="0" max="100"
                     step="0.01"
                     value={formData.tax_rate}
                     onChange={(e) => setFormData({ ...formData, tax_rate: e.target.value })}
@@ -760,33 +733,13 @@ export default function InvoicesPage() {
                       </div>
                     </div>
                   )}
-                  {isCreateMode && (
-                    <div className="mb-4 rounded-lg border bg-muted/40 p-3">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium">Draft from tracked time</p>
-                          <p className="text-sm text-muted-foreground">
-                            {timeDraftSummary || `${invoiceableTimeEntries.length} unbilled time ${invoiceableTimeEntries.length === 1 ? 'entry is' : 'entries are'} ready for invoice lines.`}
-                          </p>
-                        </div>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={handleDraftFromTime}
-                          disabled={invoiceableTimeEntries.length === 0}
-                          className="shrink-0 gap-2"
-                        >
-                          <Wand2 className="h-4 w-4" />
-                          Add time lines
-                        </Button>
-                      </div>
-                    </div>
-                  )}
+                  {isCreateMode && <p className="text-sm text-muted-foreground pb-3">Billing tracked work? <Link href="/time-entries" className="underline">Review time entries</Link> before adding lines.</p>}
                   {lineItems.map((item, index) => (
                     <div key={index} className="grid grid-cols-12 gap-2 items-end">
                       <div className="col-span-5">
                         <Input
+                          aria-label={`Line ${index + 1} description`}
+                          maxLength={1000}
                           placeholder="Description"
                           value={item.description}
                           onChange={(e) => updateLineItem(index, 'description', e.target.value)}
@@ -795,6 +748,8 @@ export default function InvoicesPage() {
                       <div className="col-span-2">
                         <Input
                           type="number"
+                          aria-label={`Line ${index + 1} quantity`}
+                          min="0.01" step="0.01"
                           placeholder="Qty"
                           value={item.quantity}
                           onChange={(e) => updateLineItem(index, 'quantity', parseFloat(e.target.value) || 0)}
@@ -804,19 +759,22 @@ export default function InvoicesPage() {
                         <Input
                           type="number"
                           step="0.01"
+                          aria-label={`Line ${index + 1} rate`}
+                          min="0"
                           placeholder="Rate"
                           value={item.rate}
                           onChange={(e) => updateLineItem(index, 'rate', parseFloat(e.target.value) || 0)}
                         />
                       </div>
                       <div className="col-span-2 text-right font-medium py-2">
-                        ${item.amount.toFixed(2)}
+                        {invoiceMoney(item.amount)}
                       </div>
                       <div className="col-span-1">
                         <Button
                           type="button"
                           variant="ghost"
                           size="icon"
+                          aria-label={`Remove line ${index + 1}`}
                           onClick={() => removeLineItem(index)}
                           disabled={lineItems.length === 1}
                         >
@@ -836,15 +794,15 @@ export default function InvoicesPage() {
                 <div className="w-64 space-y-2">
                   <div className="flex justify-between">
                     <span>Subtotal:</span>
-                    <span>${subtotal.toFixed(2)}</span>
+                    <span>{invoiceMoney(subtotal)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Tax ({formData.tax_rate}%):</span>
-                    <span>${taxAmount.toFixed(2)}</span>
+                    <span>{invoiceMoney(taxAmount)}</span>
                   </div>
                   <div className="flex justify-between font-bold text-lg border-t pt-2">
                     <span>Total:</span>
-                    <span>${total.toFixed(2)}</span>
+                    <span>{invoiceMoney(total)}</span>
                   </div>
                 </div>
               </div>

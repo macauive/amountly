@@ -11,6 +11,7 @@ export async function getProjects(filters?: ProjectFilters): Promise<Project[]> 
   let query = supabase
     .from('projects')
     .select('*, client:clients(*)')
+    .is('archived_at', null)
     .order('created_at', { ascending: false })
 
   if (filters?.organizationId) {
@@ -62,12 +63,14 @@ export async function updateProject(id: string, input: UpdateProjectInput): Prom
   return data as Project
 }
 
-export async function deleteProject(id: string): Promise<void> {
+export async function archiveProject(id: string): Promise<void> {
   const supabase = getSupabaseClient()
   const { error } = await supabase
     .from('projects')
-    .delete()
+    .update({ archived_at: new Date().toISOString() })
     .eq('id', id)
+    .select('id')
+    .single()
 
   if (error) throw error
 }

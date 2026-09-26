@@ -168,6 +168,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const user = await repairUserProfile(session.user)
+      if (user && !user.is_active) {
+        await supabase.auth.signOut({ scope: 'local' })
+        setState({ session: null, supabaseUser: null, user: null, organization: null,
+          isLoading: false, isAuthenticated: false, isProfileReady: false,
+          recoveryPath: null, error: 'This account is inactive. Contact your workspace owner.' })
+        return
+      }
       let organization: Organization | null = null
 
       if (user?.organization_id) {
@@ -225,7 +232,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             error: null,
           })
         } else if (event === 'TOKEN_REFRESHED' && session) {
-          setState(prev => ({ ...prev, session }))
+          void bootstrapAuthState(session)
         }
       }
     )

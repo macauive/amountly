@@ -202,7 +202,7 @@ export default function TimeEntriesPage() {
         end_at: endAt,
         duration_minutes: durationMinutes,
         notes: notes || undefined,
-        status: TimeEntryStatus.draft,
+        status: selectedEntry?.status ?? TimeEntryStatus.draft,
       }
 
       if (selectedEntry) {

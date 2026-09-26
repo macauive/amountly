@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
-import { getClients, createClient, updateClient, deleteClient } from '@/services/clients.service'
+import { getClients, createClient, updateClient, archiveClient } from '@/services/clients.service'
 import type { Client } from '@/types/models'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -187,13 +187,13 @@ export default function ClientsPage() {
     if (!selectedClient) return
 
     try {
-      await deleteClient(selectedClient.id)
-      toast.success('Client deleted')
+      await archiveClient(selectedClient.id)
+      toast.success('Client archived')
       setDeleteDialogOpen(false)
       setSelectedClient(null)
       loadClients()
     } catch (error) {
-      toast.error('Failed to delete client')
+      toast.error('Failed to archive client')
     }
   }
 
@@ -475,15 +475,15 @@ export default function ClientsPage() {
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Client</AlertDialogTitle>
+            <AlertDialogTitle>Archive Client</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete &quot;{selectedClient?.name}&quot;? This action cannot be undone.
+              Are you sure you want to archive &quot;{selectedClient?.name}&quot;? Existing invoices and history will be preserved.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
-              Delete
+              Archive
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

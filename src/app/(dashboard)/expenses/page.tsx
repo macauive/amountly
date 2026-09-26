@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
-import { getExpenses, createExpense, updateExpense, deleteExpense, uploadReceipt } from '@/services/expenses.service'
+import { getExpenses, createExpense, updateExpense, deleteExpense, uploadReceipt, getReceiptUrl } from '@/services/expenses.service'
 import { getProjects } from '@/services/projects.service'
 import type { Expense, Project } from '@/types/models'
 import { ExpenseStatus, ExpenseCategory, expenseStatusLabels, expenseCategoryLabels } from '@/types/enums'
@@ -172,7 +172,7 @@ export default function ExpensesPage() {
     setSaving(true)
 
     try {
-      const receiptUrl = receiptFile ? await uploadReceipt(receiptFile) : selectedExpense?.receipt_url
+      const receiptPath = receiptFile ? await uploadReceipt(receiptFile) : selectedExpense?.receipt_path
       const expenseData = {
         user_id: user?.id!,
         amount: parseFloat(formData.amount),
@@ -183,8 +183,8 @@ export default function ExpensesPage() {
         expense_date: formData.expense_date,
         project_id: formData.project_id || undefined,
         notes: formData.notes || undefined,
-        receipt_url: receiptUrl || undefined,
-        status: ExpenseStatus.draft,
+        receipt_path: receiptPath || undefined,
+        status: selectedExpense?.status ?? ExpenseStatus.draft,
       }
 
       if (selectedExpense) {
@@ -400,6 +400,10 @@ export default function ExpensesPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
+                      {(expense.receipt_path || expense.receipt_url) && <Button variant="ghost" size="sm" onClick={async () => {
+                        try { const url = await getReceiptUrl(expense); window.open(url, '_blank', 'noopener,noreferrer') }
+                        catch { toast.error('Could not open receipt. Check your access and try again.') }
+                      }}>Receipt</Button>}
                       <Button
                         variant="ghost"
                         size="icon"
@@ -503,7 +507,7 @@ export default function ExpensesPage() {
                       onChange={(e) => setReceiptFile(e.target.files?.[0] ?? null)}
                     />
                     <p className="text-xs text-muted-foreground">
-                      {receiptFile ? `${receiptFile.name} will be attached when you save.` : selectedExpense?.receipt_url ? 'Existing receipt will stay attached unless replaced.' : 'Optional image or PDF attachment.'}
+                      {receiptFile ? `${receiptFile.name} will be attached when you save.` : (selectedExpense?.receipt_path || selectedExpense?.receipt_url) ? 'Existing receipt will stay attached unless replaced.' : 'Optional image or PDF attachment.'}
                     </p>
                   </div>
                   <Textarea

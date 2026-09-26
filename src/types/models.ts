@@ -179,6 +179,28 @@ export interface Invoice {
   client?: Client
   project?: Project
   line_items?: InvoiceLineItem[]
+  payments?: InvoicePayment[]
+  events?: InvoiceEvent[]
+  amount_paid?: number
+  balance_due?: number
+  workflow_version?: number
+  issued_snapshot?: { client?: Partial<Client> }
+}
+
+export interface InvoicePayment {
+  id: string
+  invoice_id: string
+  amount: number
+  paid_on: string
+  method: 'bank_transfer' | 'card' | 'cash' | 'check' | 'other'
+  reference: string
+  created_at: string
+}
+
+export interface InvoiceEvent {
+  id: string
+  action: 'created' | 'updated' | 'issued' | 'payment_recorded' | 'cancelled'
+  created_at: string
 }
 
 export interface InvoiceLineItem {
@@ -209,6 +231,7 @@ export interface Expense {
   merchant?: string
   expense_date: string
   receipt_url?: string
+  receipt_path?: string
   status: ExpenseStatus
   notes?: string
   invoice_id?: string
