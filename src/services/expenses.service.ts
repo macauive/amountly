@@ -1,5 +1,6 @@
 import { getSupabaseClient } from '@/lib/supabase'
 import type { Expense, CreateExpenseInput, UpdateExpenseInput } from '@/types/models'
+import { recordError } from '@/services/review.service'
 
 export interface ExpenseFilters {
   startDate?: string
@@ -14,6 +15,7 @@ export async function getExpenses(filters?: ExpenseFilters): Promise<Expense[]> 
   let query = supabase
     .from('expenses')
     .select('*, project:projects(*)')
+    .is('archived_at', null)
     .order('expense_date', { ascending: false })
 
   if (filters?.startDate) {
@@ -32,10 +34,13 @@ export async function getExpenses(filters?: ExpenseFilters): Promise<Expense[]> 
     query = query.eq('project_id', filters.projectId)
   }
 
-  const { data, error } = await query
-
-  if (error) throw error
-  return data as Expense[]
+  const rows: Expense[] = []
+  for(let offset=0; ; offset+=200) {
+    const {data,error}=await query.order('id').range(offset,offset+199)
+    if(error) throw new Error('Could not load expenses.')
+    rows.push(...(data ?? []) as Expense[])
+    if(!data || data.length<200) return rows
+  }
 }
 
 export async function getExpense(id: string): Promise<Expense | null> {
@@ -46,43 +51,46 @@ export async function getExpense(id: string): Promise<Expense | null> {
     .eq('id', id)
     .single()
 
-  if (error) throw error
+  if (error) throw recordError(error.code)
   return data as Expense
 }
 
-export async function createExpense(input: CreateExpenseInput): Promise<Expense> {
+export async function createExpense(input: CreateExpenseInput, requestId?: string): Promise<Expense> {
   const supabase = getSupabaseClient()
   const { data, error } = await supabase
     .from('expenses')
-    .insert(input)
+    .insert({ ...input, ...(requestId ? { id: requestId } : {}) })
     .select()
     .single()
 
-  if (error) throw error
+  if (error) throw recordError(error.code)
   return data as Expense
 }
 
-export async function updateExpense(id: string, input: UpdateExpenseInput): Promise<Expense> {
+export async function updateExpense(id: string, input: UpdateExpenseInput, expectedUpdatedAt: string): Promise<Expense> {
   const supabase = getSupabaseClient()
   const { data, error } = await supabase
     .from('expenses')
     .update(input)
     .eq('id', id)
+    .eq('updated_at', expectedUpdatedAt)
     .select()
     .single()
 
-  if (error) throw error
+  if (error) throw recordError(error.code)
   return data as Expense
 }
 
-export async function deleteExpense(id: string): Promise<void> {
+export async function archiveExpense(id: string, expectedUpdatedAt: string): Promise<void> {
   const supabase = getSupabaseClient()
   const { error } = await supabase
     .from('expenses')
-    .delete()
+    .update({ archived_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('updated_at', expectedUpdatedAt)
+    .select('id').single()
 
-  if (error) throw error
+  if (error) throw recordError(error.code)
 }
 
 // Upload receipt
@@ -119,7 +127,7 @@ export async function uploadReceipt(file: File): Promise<string> {
       upsert: false,
     })
 
-  if (error) throw error
+  if (error) throw new Error('Could not upload the receipt. Try again.')
 
   return filePath
 }

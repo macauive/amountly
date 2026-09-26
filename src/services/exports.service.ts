@@ -1,6 +1,6 @@
 import { getSupabaseClient } from '@/lib/supabase'
 
-const tables = new Set(['invoice_payments', 'invoices', 'invoice_line_items', 'expenses', 'bills', 'clients', 'projects', 'time_entries', 'tax_filings', 'vendors', 'vendor_bills', 'purchase_orders', 'employees', 'inventory_items'])
+const tables = new Set(['invoice_payments', 'invoice_payment_reversals', 'invoices', 'invoice_line_items', 'expenses', 'bills', 'clients', 'projects', 'time_entries', 'tax_filings', 'vendors', 'vendor_bills', 'purchase_orders', 'employees', 'inventory_items'])
 
 // Authorization remains enforced by database RLS for every page.
 export async function getExportRows(table: string): Promise<Record<string, unknown>[]> {

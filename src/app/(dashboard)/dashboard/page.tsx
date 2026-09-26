@@ -177,6 +177,7 @@ function getWorkStats(accountType: AccountType, data: WorkDashboardData): Dashbo
   const monthEnd = endOfMonth(now)
 
   const paymentsThisMonth = data.invoices.flatMap(invoice => invoice.payments ?? []).filter(payment => {
+    if (payment.reversal) return false
     const paidAt = parseISO(payment.paid_on)
     return !isBefore(paidAt, monthStart) && !isAfter(paidAt, monthEnd)
   })

@@ -12,7 +12,7 @@ import type { User, Organization } from '@/types/models'
 // implemented but are intentionally hidden from primary navigation for now.
 
 // Tab definitions matching iOS app
-export type TabId = 'home' | 'time' | 'invoices' | 'bills' | 'expenses' | 'projects' | 'clients' | 'accounting' | 'tax' | 'payroll' | 'inventory' | 'team' | 'settings'
+export type TabId = 'home' | 'contacts' | 'review' | 'time' | 'invoices' | 'bills' | 'expenses' | 'projects' | 'clients' | 'accounting' | 'tax' | 'payroll' | 'inventory' | 'team' | 'settings'
 
 export interface Tab {
   id: TabId
@@ -24,6 +24,8 @@ export interface Tab {
 
 const allTabs: Tab[] = [
   { id: 'home', label: 'Dashboard', icon: 'LayoutDashboard', path: '/dashboard' },
+  { id: 'contacts', label: 'Contacts', icon: 'Users', path: '/contacts', requiredCapabilities: [Capability.viewClients,Capability.manageVendors] },
+  { id: 'review', label: 'Review inbox', icon: 'Receipt', path: '/review', requiredCapabilities: [Capability.viewOwnExpenses] },
   {
     id: 'time',
     label: 'Time Entries',

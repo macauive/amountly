@@ -99,13 +99,15 @@ Still required before production rollout:
 4. Full email-verification delivery/new-signup UI and forced-expiry UI recovery on the intended hosted auth configuration. Local Auth/RLS onboarding, expired-token rejection, and auth race tests are verified; hosted delivery/redirect behavior is not.
 
 
-The three new timestamped migrations (foundation, invoice workflow, and conflict response) and the web application must be released together in a controlled window. The old client uses direct invoice writes that these migrations intentionally reject; the new client requires the new columns/tables/RPCs. Do not deploy either half independently and assume compatibility. Inventory other clients, including any iOS build, before release.
+At the prior checkpoint, the three new timestamped migrations (foundation, invoice workflow, and conflict response) and the web application must be released together in a controlled window. The old client uses direct invoice writes that these migrations intentionally reject; the new client requires the new columns/tables/RPCs. Do not deploy either half independently and assume compatibility. Inventory other clients, including any iOS build, before release.
 
 Before production rollout: verify live migration history, take/verify the database recovery point, inventory malformed legacy invoices and work records, confirm private-schema API exclusion, and rehearse the migration against a staging copy. Migration 011 now declares the historically missing owner_id prerequisite so a fresh local database no longer requires a test-only patch. Already applied migration history is not rewritten.
 
 No production migration or deployment has been executed. Production Supabase advisors and leaked-password protection settings have not been changed. The installed CLI lacks local advisor support; focused local catalog checks are recorded above instead.
 
-## Remaining sequence
+## Original remaining sequence
+
+The subsequent local implementation and current limits are recorded in [workflow-expansion.md](workflow-expansion.md). The list below records the sequence at the prior commit.
 
 1. Add audited payment corrections/reversals and safely link tracked time to billing. Reconcile legacy payment evidence with user review.
 2. Apply the same command/record-history pattern to bills and expenses, including duplicate prevention and a shared capture/review inbox.

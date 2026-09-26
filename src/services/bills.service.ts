@@ -1,5 +1,6 @@
 import { getSupabaseClient } from '@/lib/supabase'
 import type { Bill, CreateBillInput, UpdateBillInput } from '@/types/models'
+import { recordError } from '@/services/review.service'
 
 export interface BillFilters {
   status?: string
@@ -20,10 +21,13 @@ export async function getBills(filters?: BillFilters): Promise<Bill[]> {
     query = query.eq('category', filters.category)
   }
 
-  const { data, error } = await query
-
-  if (error) throw new Error(error.message)
-  return data as Bill[]
+  const rows: Bill[]=[]
+  for (let offset=0; ; offset+=200) {
+    const { data,error }=await query.order('id').range(offset,offset+199)
+    if(error) throw new Error('Could not load bills.')
+    rows.push(...(data ?? []) as Bill[])
+    if(!data || data.length<200) return rows
+  }
 }
 
 export async function getBill(id: string): Promise<Bill | null> {
@@ -38,44 +42,38 @@ export async function getBill(id: string): Promise<Bill | null> {
   return data as Bill
 }
 
-export async function createBill(input: CreateBillInput): Promise<Bill> {
+export async function createBill(input: CreateBillInput, id = crypto.randomUUID()): Promise<Bill> {
   const supabase = getSupabaseClient()
   const { data, error } = await supabase
     .from('bills')
-    .insert(input)
+    .insert({ ...input, id })
     .select()
     .single()
 
-  if (error) throw new Error(error.message)
+  if (error) throw recordError(error.code)
   return data as Bill
 }
 
-export async function updateBill(id: string, input: UpdateBillInput): Promise<Bill> {
+export async function updateBill(id: string, input: UpdateBillInput, expectedUpdatedAt: string): Promise<Bill> {
   const supabase = getSupabaseClient()
   const { data, error } = await supabase
     .from('bills')
     .update(input)
     .eq('id', id)
+    .eq('updated_at', expectedUpdatedAt)
     .select()
     .single()
 
-  if (error) throw new Error(error.message)
+  if (error) throw recordError(error.code)
   return data as Bill
 }
 
-export async function deleteBill(id: string): Promise<void> {
-  const supabase = getSupabaseClient()
-  const { error } = await supabase
-    .from('bills')
-    .delete()
-    .eq('id', id)
-
-  if (error) throw new Error(error.message)
+export async function cancelBill(bill: Bill): Promise<void> {
+  const { error } = await getSupabaseClient().rpc('bill_action', { p_id:bill.id,p_action:'cancel',p_expected_updated_at:bill.updated_at })
+  if (error) throw recordError(error.code)
 }
 
-export async function markBillPaid(id: string): Promise<Bill> {
-  return updateBill(id, {
-    status: 'paid' as any,
-    paid_at: new Date().toISOString(),
-  })
+export async function markBillPaid(bill: Bill, paidOn: string): Promise<void> {
+  const { error } = await getSupabaseClient().rpc('bill_action', { p_id:bill.id,p_action:'pay',p_expected_updated_at:bill.updated_at,p_paid_on:paidOn })
+  if (error) throw recordError(error.code)
 }

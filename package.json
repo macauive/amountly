@@ -15,6 +15,7 @@
     "test:pdf": "node --test tests/pdf.test.cjs",
     "test:upgrade": "node tests/security-db.cjs --upgrade",
     "test:release:local": "node tests/release-local.cjs",
+    "test:reporting": "node --test tests/reporting.test.cjs",
     "test:auth": "node --test tests/auth.test.cjs"
   },
   "dependencies": {

@@ -16,10 +16,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { formatDateOnly } from '@/lib/date-format'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
+import { PaymentCorrectionDialog } from '@/components/PaymentCorrectionDialog'
 
 const eventLabels: Record<string, string> = {
   created: 'Draft created', updated: 'Draft updated', issued: 'Invoice issued',
   payment_recorded: 'Payment recorded', cancelled: 'Invoice cancelled',
+  payment_reversed: 'Payment corrected', time_reserved: 'Time reserved for billing',
 }
 
 export default function InvoiceDetailPage() {
@@ -29,6 +31,7 @@ export default function InvoiceDetailPage() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [paymentOpen, setPaymentOpen] = useState(false)
+  const [correctionId, setCorrectionId] = useState<string | null>(null)
   const [confirmAction, setConfirmAction] = useState<'issue' | 'cancel' | null>(null)
   const paymentId = useRef('')
   const paymentAttempt = useRef<Omit<InvoicePayment, 'invoice_id' | 'created_at'> | null>(null)
@@ -90,25 +93,27 @@ export default function InvoiceDetailPage() {
     <Link className="text-sm underline underline-offset-4" href="/invoices">← Invoices</Link>
     <div className="flex flex-wrap justify-between gap-4">
       <div><h1 className="text-2xl font-bold">{invoice.invoice_number}</h1><p className="text-muted-foreground">{invoice.client?.name || 'Client unavailable'}</p></div>
-      <Badge className="self-start">{outstanding && payments.length > 0 ? `Partially paid${invoice.status === InvoiceStatus.overdue ? ' · Overdue' : ''}` : invoiceStatusLabels[invoice.status]}</Badge>
+      <Badge className="self-start">{outstanding && (invoice.amount_paid ?? 0) > 0 ? `Partially paid${invoice.status === InvoiceStatus.overdue ? ' · Overdue' : ''}` : invoiceStatusLabels[invoice.status]}</Badge>
     </div>
     <div className="grid gap-4 sm:grid-cols-3">
       {[['Invoice total', invoice.total], ['Payments recorded', invoice.amount_paid ?? 0], ['Balance due', invoice.balance_due ?? invoice.total]].map(([label, amount]) => <Card key={label}><CardHeader className="pb-2"><CardTitle className="text-sm">{label}</CardTitle></CardHeader><CardContent className="text-2xl font-semibold">{money(Number(amount))}</CardContent></Card>)}
     </div>
     {invoice.status === InvoiceStatus.paid && payments.length === 0 && <p className="rounded-md border p-3 text-sm">This invoice was previously marked paid. No payment history was recorded; it is excluded from the new cash-received totals.</p>}
     <div className="flex flex-wrap gap-2">
-      {invoice.status === InvoiceStatus.draft && canEdit && <Button variant="outline" asChild><Link href={`/invoices?edit=${invoice.id}`}>Edit draft</Link></Button>}
+      {invoice.status === InvoiceStatus.draft && canEdit && !invoice.time_links?.length && <Button variant="outline" asChild><Link href={`/invoices?edit=${invoice.id}`}>Edit draft</Link></Button>}
       {invoice.status === InvoiceStatus.draft && canSend && <Button disabled={busy} onClick={() => setConfirmAction('issue')}>Issue invoice</Button>}
       {outstanding && canRecord && <Button onClick={() => { if (!paymentAttempt.current) paymentId.current = crypto.randomUUID(); setPaymentOpen(true) }}>Record payment</Button>}
       {outstanding && canEdit && payments.length === 0 && <Button variant="outline" onClick={() => setConfirmAction('cancel')}>Cancel invoice</Button>}
     </div>
+    {!!invoice.time_links?.length && <p className="rounded-md border p-3 text-sm">Created from {invoice.time_links.length} time entries. {invoice.status === InvoiceStatus.cancelled ? 'Cancellation released the entries for billing again; the original time snapshot is preserved.' : 'Linked time is reserved against duplicate billing. To change a time draft, delete it from the invoice list and recreate it.'}</p>}
     <Card><CardHeader><CardTitle>Invoice details</CardTitle><p className="text-sm text-muted-foreground">Invoice date {formatDateOnly(invoice.issue_date)} · Due {formatDateOnly(invoice.due_date)} · {invoice.currency}</p></CardHeader><CardContent>
       <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left"><th className="py-2">Description</th><th className="text-right px-3">Quantity</th><th className="text-right px-3">Rate</th><th className="text-right">Amount</th></tr></thead><tbody>{invoice.line_items?.slice().sort((a,b) => a.order-b.order).map(line => <tr className="border-b" key={line.id}><td className="py-3">{line.description}</td><td className="text-right px-3">{line.quantity}</td><td className="text-right px-3">{money(line.rate)}</td><td className="text-right">{money(line.amount)}</td></tr>)}</tbody></table></div>
       <div className="mt-4 space-y-1 text-right"><p>Subtotal {money(invoice.subtotal)}</p><p>Tax ({invoice.tax_rate}%) {money(invoice.tax_amount)}</p><p className="font-semibold">Total {money(invoice.total)}</p></div>
       {invoice.notes && <p className="mt-4 whitespace-pre-wrap text-sm">{invoice.notes}</p>}
       {invoice.status !== InvoiceStatus.draft && <p className="mt-4 text-sm text-muted-foreground">Issued details are locked to preserve the financial record.</p>}
     </CardContent></Card>
-    <Card><CardHeader><CardTitle>Payments</CardTitle></CardHeader><CardContent>{payments.length === 0 ? <p className="text-sm text-muted-foreground">No payments recorded.</p> : <ul className="divide-y">{payments.slice().sort((a,b) => b.paid_on.localeCompare(a.paid_on)).map(p => <li className="py-3 flex justify-between gap-4" key={p.id}><div><p>{formatDateOnly(p.paid_on)} · {p.method.replace('_',' ')}</p><p className="text-sm text-muted-foreground">{p.reference}</p></div><strong>{money(p.amount)}</strong></li>)}</ul>}</CardContent></Card>
+    <Card><CardHeader><CardTitle>Payments</CardTitle></CardHeader><CardContent>{payments.length === 0 ? <p className="text-sm text-muted-foreground">No payments recorded.</p> : <ul className="divide-y">{payments.slice().sort((a,b) => b.paid_on.localeCompare(a.paid_on)).map(p => <li className="py-3 flex flex-wrap justify-between gap-4" key={p.id}><div><p>{formatDateOnly(p.paid_on)} · {p.method.replace('_',' ')}</p><p className="text-sm text-muted-foreground">{p.reference}</p>{p.reversal && <p className="mt-1 text-sm">Corrected {new Date(p.reversal.created_at).toLocaleDateString()}: {p.reversal.reason}</p>}</div><div className="flex items-center gap-3"><strong className={p.reversal ? 'line-through text-muted-foreground' : ''}>{money(p.amount)}</strong>{!p.reversal && canRecord && <Button variant="outline" size="sm" disabled={busy} onClick={() => setCorrectionId(p.id)}>Correct entry</Button>}</div></li>)}</ul>}</CardContent></Card>
+    {correctionId && <PaymentCorrectionDialog key={correctionId} paymentId={correctionId} onClose={() => setCorrectionId(null)} onSaved={load} />}
     <Card><CardHeader><CardTitle>Activity</CardTitle></CardHeader><CardContent><ul className="space-y-2 text-sm">{invoice.events?.slice().sort((a,b) => b.created_at.localeCompare(a.created_at)).map(event => <li key={event.id}>{eventLabels[event.action]} · {new Date(event.created_at).toLocaleString()}</li>)}</ul>{!invoice.events?.length && <p className="text-sm text-muted-foreground">Earlier activity was not recorded.</p>}</CardContent></Card>
     <Dialog open={paymentOpen} onOpenChange={open => { if (!busy) setPaymentOpen(open) }}><DialogContent><DialogHeader><DialogTitle>Record payment</DialogTitle><DialogDescription>Record money already received. This does not charge your client or transfer money.</DialogDescription></DialogHeader>
       <form onSubmit={savePayment} className="space-y-4">
@@ -118,7 +123,7 @@ export default function InvoiceDetailPage() {
         <div><Label htmlFor="payment_method">Method</Label><select id="payment_method" name="method" defaultValue={paymentAttempt.current?.method ?? 'bank_transfer'} className="w-full rounded-md border bg-background p-2"><option value="bank_transfer">Bank transfer</option><option value="card">Card</option><option value="cash">Cash</option><option value="check">Check</option><option value="other">Other</option></select></div>
         <div><Label htmlFor="payment_reference">Reference (optional)</Label><Input id="payment_reference" name="reference" defaultValue={paymentAttempt.current?.reference ?? ''} maxLength={200} placeholder="A short reference, without account numbers" /></div>
         </fieldset>
-        <p className="text-xs text-muted-foreground">Payments are permanent records. Check the details before saving.</p>
+        <p className="text-xs text-muted-foreground">Check the details before saving. Corrections preserve the original entry and require a reason.</p>
         <Button type="submit" disabled={busy}>{busy ? 'Saving…' : paymentAttempt.current ? 'Retry original payment' : 'Save payment'}</Button>
       </form>
     </DialogContent></Dialog>

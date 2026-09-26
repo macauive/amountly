@@ -1,5 +1,6 @@
 'use client'
 import { escapeCsvValue } from '@/lib/csv'
+import { incomeRecords,expenseRecords,sumMoney,estimateFederalTax,estimateSETax,taxQuarters,supportedTaxYear,taxSources,type IncomeBasis } from '@/lib/reporting'
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -110,39 +111,6 @@ function getDueBadge(dueDate: string, status: TaxFilingStatus) {
 }
 
 // US Tax brackets 2025 (single filer, approximate)
-function estimateFederalTax(income: number): number {
-  if (income <= 0) return 0
-  const brackets = [
-    { limit: 11925, rate: 0.10 },
-    { limit: 48475, rate: 0.12 },
-    { limit: 103350, rate: 0.22 },
-    { limit: 197300, rate: 0.24 },
-    { limit: 250525, rate: 0.32 },
-    { limit: 626350, rate: 0.35 },
-    { limit: Infinity, rate: 0.37 },
-  ]
-  const standardDeduction = 14600
-  const taxableIncome = Math.max(0, income - standardDeduction)
-  let tax = 0
-  let prev = 0
-  for (const bracket of brackets) {
-    const taxable = Math.min(taxableIncome, bracket.limit) - prev
-    if (taxable <= 0) break
-    tax += taxable * bracket.rate
-    prev = bracket.limit
-  }
-  return tax
-}
-
-// Self-employment tax (15.3% up to SS wage base, 2.9% above)
-function estimateSETax(netEarnings: number): number {
-  if (netEarnings <= 0) return 0
-  const ssWageBase = 168600
-  const ssTax = Math.min(netEarnings, ssWageBase) * 0.124
-  const medicareTax = netEarnings * 0.029
-  return ssTax + medicareTax
-}
-
 const FORM_TYPES = [
   '1040-ES', '1040', '1099-NEC', '1099-MISC', 'W-2',
   '941', '940', 'W-3', 'Sales Tax Return', 'State Return', 'Other',
@@ -174,6 +142,8 @@ type TaxPacketRow = {
   status: string
   amount: number | string
   notes: string
+  currency: string
+  basis: string
 }
 
 // ─── Quarter Cards ────────────────────────────────────────────
@@ -185,17 +155,10 @@ interface QuarterInfo {
   filing?: TaxFiling
 }
 
-function getQuarters(year: number): QuarterInfo[] {
-  return [
-    { label: 'Q1', period: `Jan 1 – Mar 31, ${year}`, dueDate: `${year}-04-15` },
-    { label: 'Q2', period: `Apr 1 – May 31, ${year}`, dueDate: `${year}-06-16` },
-    { label: 'Q3', period: `Jun 1 – Aug 31, ${year}`, dueDate: `${year}-09-15` },
-    { label: 'Q4', period: `Sep 1 – Dec 31, ${year}`, dueDate: `${year + 1}-01-15` },
-  ]
-}
+function getQuarters(year:number):QuarterInfo[] { return taxQuarters(year) }
 
 function downloadTaxPacketCsv(rows: TaxPacketRow[], filename: string) {
-  const headers: (keyof TaxPacketRow)[] = ['record_type', 'date', 'name', 'category', 'status', 'amount', 'notes']
+  const headers: (keyof TaxPacketRow)[] = ['record_type', 'date', 'name', 'category', 'status', 'amount', 'currency', 'basis', 'notes']
   const csv = [
     headers.join(','),
     ...rows.map(row => headers.map(header => escapeCsvValue(row[header])).join(',')),
@@ -217,14 +180,23 @@ export default function TaxPage() {
   const router = useRouter()
   const { user } = useAuth()
   const { hasCapability } = useAppState()
+  const [selectedYear,setSelectedYear]=useState(supportedTaxYear(CURRENT_YEAR)?CURRENT_YEAR:2026)
+  const [reportCurrency,setReportCurrency]=useState('USD')
+  const [basis,setBasis]=useState<IncomeBasis>('cash')
+  useEffect(() => {
+    const currency = user?.preferences?.default_currency
+    if (typeof currency === 'string' && ['USD','EUR','GBP','CAD','AUD'].includes(currency)) setReportCurrency(currency)
+    setBasis(user?.preferences?.accounting_basis === 'accrual' ? 'accrual' : 'cash')
+  }, [user?.id])
+  const formatReportCurrency=(amount:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:reportCurrency}).format(amount)
 
   const accountType = user?.account_type || AccountType.personal
-  const canEstimate = hasCapability(Capability.generateTaxEstimates)
+  const canEstimate = hasCapability(Capability.generateTaxEstimates) && accountType === AccountType.freelancer && reportCurrency === 'USD' && supportedTaxYear(selectedYear)
   const canExport = hasCapability(Capability.exportTaxDocuments)
-  const canTrackSalesTax = hasCapability(Capability.trackSalesTax)
+  const canTrackSalesTax = false // Deferred until backed by recorded collections and remittances.
 
-  const [filings, setFilings] = useState<TaxFiling[]>([])
-  const [taxExpenses, setTaxExpenses] = useState<Expense[]>([])
+  const [allFilings, setFilings] = useState<TaxFiling[]>([])
+  const [allExpenses, setTaxExpenses] = useState<Expense[]>([])
   const [taxInvoices, setTaxInvoices] = useState<Invoice[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -240,8 +212,8 @@ export default function TaxPage() {
   const [formData, setFormData] = useState({
     name: '',
     form_type: '1040-ES',
-    tax_period_start: `${CURRENT_YEAR}-01-01`,
-    tax_period_end: `${CURRENT_YEAR}-12-31`,
+    tax_period_start: `${selectedYear}-01-01`,
+    tax_period_end: `${selectedYear}-12-31`,
     due_date: '',
     amount_due: '',
     amount_paid: '',
@@ -252,16 +224,18 @@ export default function TaxPage() {
   const [grossIncome, setGrossIncome] = useState('')
   const [expenses, setExpenses] = useState('')
 
-  useEffect(() => { loadData() }, [])
+  const filings=allFilings.filter(filing=>(filing.tax_period_start||filing.due_date).slice(0,4)===String(selectedYear))
+  const taxExpenses=expenseRecords(allExpenses,selectedYear,reportCurrency)
+  useEffect(() => { if(user)void loadData() }, [user?.id,user?.organization_id])
 
   const loadData = async () => {
     try {
       setError(null)
-      const yearStart = `${CURRENT_YEAR}-01-01`
-      const yearEnd = `${CURRENT_YEAR}-12-31`
+      const yearStart = `${selectedYear}-01-01`
+      const yearEnd = `${selectedYear}-12-31`
       const [filingsData, expensesData, invoicesData] = await Promise.all([
         getTaxFilings(),
-        getExpenses({ startDate: yearStart, endDate: yearEnd }),
+        getExpenses(),
         getInvoices({
           userId: user?.id,
           organizationId: user?.organization_id,
@@ -286,8 +260,8 @@ export default function TaxPage() {
     setFormData({
       name: '',
       form_type: '1040-ES',
-      tax_period_start: `${CURRENT_YEAR}-01-01`,
-      tax_period_end: `${CURRENT_YEAR}-12-31`,
+      tax_period_start: `${selectedYear}-01-01`,
+      tax_period_end: `${selectedYear}-12-31`,
       due_date: format(new Date(), 'yyyy-MM-dd'),
       amount_due: '',
       amount_paid: '',
@@ -370,8 +344,8 @@ export default function TaxPage() {
     if (!user) return
     setSeeding(true)
     try {
-      await seedQuarterlyEstimates(user.id, CURRENT_YEAR)
-      toast.success(`${CURRENT_YEAR} quarterly estimates added`)
+      await seedQuarterlyEstimates(selectedYear)
+      toast.success(`${selectedYear} quarterly estimates added`)
       loadData()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to seed')
@@ -386,13 +360,13 @@ export default function TaxPage() {
       return
     }
 
-    downloadTaxPacketCsv(taxPacketRows, `amountly-tax-packet-${CURRENT_YEAR}.csv`)
+    downloadTaxPacketCsv(taxPacketRows, `amountly-tax-packet-${selectedYear}.csv`)
     toast.success('Tax packet downloaded')
   }
 
   // ─── Computed ────────────────────────────────────────────────
 
-  const quarters = getQuarters(CURRENT_YEAR)
+  const quarters = getQuarters(selectedYear)
   const quarterFilings = filings.filter(f => f.form_type === '1040-ES')
 
   // Match filings to quarters by due date
@@ -413,10 +387,10 @@ export default function TaxPage() {
 
   // Tax estimator
   const netIncome = (parseFloat(grossIncome) || 0) - (parseFloat(expenses) || 0)
-  const seTax = accountType !== AccountType.personal ? estimateSETax(netIncome * 0.9235) : 0
+  const seTax = accountType !== AccountType.personal ? estimateSETax(netIncome * 0.9235,selectedYear) : 0
   const seDeduction = seTax / 2
   const adjustedIncome = netIncome - seDeduction
-  const federalTax = estimateFederalTax(adjustedIncome)
+  const federalTax = estimateFederalTax(adjustedIncome,selectedYear)
   const totalTax = federalTax + seTax
   const quarterlyPayment = totalTax / 4
   const hasEstimatorInputs = grossIncome.trim() !== '' && expenses.trim() !== ''
@@ -425,21 +399,22 @@ export default function TaxPage() {
     const expenseDate = parseISO(expense.expense_date)
     return isWithinInterval(expenseDate, { start: addDays(new Date(), -45), end: new Date() })
   })
-  const taxIncomeInvoices = taxInvoices.filter(invoice => (
-    invoice.status === InvoiceStatus.sent ||
-    invoice.status === InvoiceStatus.paid ||
-    invoice.status === InvoiceStatus.overdue
-  ))
-  const taxExpenseTotal = taxExpenses.reduce((sum, expense) => sum + expense.amount, 0)
-  const taxIncomeTotal = taxIncomeInvoices.reduce((sum, invoice) => sum + invoice.total, 0)
+  const incomeRows=incomeRecords(taxInvoices,selectedYear,reportCurrency,basis)
+  const incomeInvoiceIds=new Set(incomeRows.map(row=>row.invoice_id))
+  const taxIncomeInvoices=taxInvoices.filter(invoice=>incomeInvoiceIds.has(invoice.id))
+  const taxExpenseTotal=sumMoney(taxExpenses)
+  const taxIncomeTotal=sumMoney(incomeRows)
   const exportWarnings = [
+    'Expenses use their recorded expense date and have not been verified as deductible or paid. Review supporting documents.',
+    `${basis === 'cash' ? 'Income includes unreversed payment events dated in this year; legacy paid flags without payment evidence are excluded.' : 'Income includes issued invoices dated in this year, whether or not paid.'} Currency: ${reportCurrency}.`,
     ...(overdueFiled.length > 0 ? [`${overdueFiled.length} filing${overdueFiled.length === 1 ? '' : 's'} are overdue.`] : []),
     ...(uncategorizedTaxExpenses.length > 0 ? [`${uncategorizedTaxExpenses.length} expense${uncategorizedTaxExpenses.length === 1 ? '' : 's'} are missing categories.`] : []),
     ...(taxExpenses.length === 0 ? ['No expenses are included for this tax year.'] : []),
-    ...(accountType !== AccountType.personal && taxIncomeInvoices.length === 0 ? ['No sent, paid, or overdue invoices are included as income.'] : []),
+    ...(accountType !== AccountType.personal && taxIncomeInvoices.length === 0 ? ['No income records match this year, currency, and basis.'] : []),
   ]
   const taxPacketRows: TaxPacketRow[] = [
     ...taxExpenses.map((expense) => ({
+      currency:expense.currency, basis:'recorded_expense_date',
       record_type: 'expense',
       date: expense.expense_date,
       name: expense.merchant || expense.description || 'Expense',
@@ -448,16 +423,9 @@ export default function TaxPage() {
       amount: expense.amount,
       notes: expense.notes || '',
     })),
-    ...taxIncomeInvoices.map((invoice) => ({
-      record_type: 'invoice',
-      date: invoice.issue_date,
-      name: invoice.invoice_number,
-      category: invoice.client?.name || 'Client income',
-      status: invoice.status,
-      amount: invoice.total,
-      notes: invoice.notes || '',
-    })),
+    ...incomeRows.map(row=>({record_type:basis==='cash'?'payment':'invoice',date:row.date,name:row.name,category:'Income',status:row.status,amount:row.amount,currency:row.currency,basis,notes:''})),
     ...filings.map((filing) => ({
+      currency:'USD',basis:'filing_record',
       record_type: 'filing',
       date: filing.due_date,
       name: filing.name,
@@ -483,7 +451,7 @@ export default function TaxPage() {
     },
     ...(accountType !== AccountType.personal ? [{
       id: 'quarterly',
-      label: `${CURRENT_YEAR} quarterly estimates are set up`,
+      label: `${selectedYear} quarterly estimates are set up`,
       detail: hasQuarterlyFilings
         ? `${quarterFilings.length} estimated tax filing${quarterFilings.length === 1 ? '' : 's'} tracked for this year.`
         : 'Add quarterly estimates so self-employed tax payments do not live in your head.',
@@ -541,7 +509,7 @@ export default function TaxPage() {
     ...(accountType !== AccountType.personal && taxIncomeInvoices.length === 0 ? [{
       id: 'missing-income',
       title: 'No invoice income is ready for tax prep',
-      detail: 'Send, mark paid, or review invoices so income does not stay disconnected from estimates.',
+      detail: 'Review issued invoices and recorded payments for the selected year, currency, and income basis.',
       href: '/invoices',
       badge: 'Review',
       tone: 'watch',
@@ -588,13 +556,20 @@ export default function TaxPage() {
         <div>
           <h1 className="text-2xl font-bold">Tax</h1>
           <p className="text-muted-foreground">
-            {CURRENT_YEAR} tax year · {accountType === AccountType.personal ? 'Personal' : accountType === AccountType.freelancer ? 'Self-employed' : 'Business'}
+            {selectedYear} tax year · {accountType === AccountType.personal ? 'Personal' : accountType === AccountType.freelancer ? 'Self-employed' : 'Business'}
           </p>
         </div>
         <Button onClick={openCreate} className="gap-2">
           <Plus className="w-4 h-4" />
           Add Filing
         </Button>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-4 rounded-lg border p-4">
+        <div><Label htmlFor="report-year">Tax year</Label><select id="report-year" className="block rounded border bg-background p-2" value={selectedYear} onChange={event=>setSelectedYear(Number(event.target.value))}>{[2026,2025].map(year=><option key={year}>{year}</option>)}</select></div>
+        <div><Label htmlFor="report-currency">Currency</Label><select id="report-currency" className="block rounded border bg-background p-2" value={reportCurrency} onChange={event=>setReportCurrency(event.target.value)}>{['USD','EUR','GBP','CAD','AUD'].map(code=><option key={code}>{code}</option>)}</select></div>
+        <div><Label htmlFor="report-basis">Income basis</Label><select id="report-basis" className="block rounded border bg-background p-2" value={basis} onChange={event=>setBasis(event.target.value as IncomeBasis)}><option value="cash">Cash received</option><option value="accrual">Accrual: issued invoices</option></select></div>
+        <p className="w-full text-sm text-muted-foreground">Calendar-year records only. Currencies are reported separately without conversion. Filing amounts and U.S. estimates are USD. <a className="underline" href={taxSources.irs} target="_blank" rel="noreferrer">IRS rates</a> · <a className="underline" href={taxSources.ssa} target="_blank" rel="noreferrer">SSA limits</a> · <a className="underline" href={taxSources.deadlines} target="_blank" rel="noreferrer">Federal deadlines</a>. Disaster relief and other exceptions may change deadlines.</p>
       </div>
 
       {/* Summary Cards */}
@@ -761,12 +736,12 @@ export default function TaxPage() {
               <div className="rounded-lg border bg-muted/30 p-3">
                 <p className="text-xs text-muted-foreground">Expenses</p>
                 <p className="text-xl font-semibold">{taxExpenses.length}</p>
-                <p className="text-xs text-muted-foreground">{formatCurrency(taxExpenseTotal)}</p>
+                <p className="text-xs text-muted-foreground">{formatReportCurrency(taxExpenseTotal)}</p>
               </div>
               <div className="rounded-lg border bg-muted/30 p-3">
                 <p className="text-xs text-muted-foreground">Income records</p>
                 <p className="text-xl font-semibold">{taxIncomeInvoices.length}</p>
-                <p className="text-xs text-muted-foreground">{formatCurrency(taxIncomeTotal)}</p>
+                <p className="text-xs text-muted-foreground">{formatReportCurrency(taxIncomeTotal)}</p>
               </div>
               <div className="rounded-lg border bg-muted/30 p-3">
                 <p className="text-xs text-muted-foreground">Filings</p>
@@ -815,32 +790,32 @@ export default function TaxPage() {
           <TabsContent value="quarterly" className="mt-4 space-y-4">
             <div className="flex justify-between items-center">
               <div>
-                <h2 className="font-semibold">{CURRENT_YEAR} Quarterly Estimated Taxes</h2>
+                <h2 className="font-semibold">{selectedYear} Quarterly Estimated Taxes</h2>
                 <p className="text-sm text-muted-foreground">
-                  Self-employed individuals must pay estimated taxes quarterly to avoid penalties.
+                  Standard federal estimated-tax dates for individuals. Whether a payment is required depends on your tax situation.
                 </p>
               </div>
               {!hasQuarterlyFilings && (
                 <Button variant="outline" onClick={handleSeedQuarterly} disabled={seeding} className="gap-2">
                   {seeding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
-                  Add {CURRENT_YEAR} Quarters
+                  Add {selectedYear} Quarters
                 </Button>
               )}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
               {quartersWithFilings.map((quarter) => {
-                const isPastDue = isPast(parseISO(quarter.dueDate))
+                const isPastDue = !!quarter.filing && isPast(parseISO(quarter.dueDate))
                 const daysLeft = differenceInDays(parseISO(quarter.dueDate), new Date())
                 const isFiled = quarter.filing?.status === TaxFilingStatus.filed || quarter.filing?.status === TaxFilingStatus.accepted
-                const isUrgent = daysLeft >= 0 && daysLeft <= 14
+                const isUrgent = !!quarter.filing && daysLeft >= 0 && daysLeft <= 14
 
                 return (
                   <Card key={quarter.label} className={`relative ${isFiled ? 'border-green-200 dark:border-green-800' : isPastDue && !isFiled ? 'border-destructive/50' : isUrgent ? 'border-orange-200 dark:border-orange-800' : ''}`}>
                     <CardHeader className="pb-2">
                       <div className="flex justify-between items-start">
                         <div>
-                          <CardTitle className="text-base">{quarter.label} {CURRENT_YEAR}</CardTitle>
+                          <CardTitle className="text-base">{quarter.label} {selectedYear}</CardTitle>
                           <p className="text-xs text-muted-foreground mt-0.5">{quarter.period}</p>
                         </div>
                         {isFiled ? (
@@ -861,7 +836,7 @@ export default function TaxPage() {
                         <div className="flex justify-between text-sm">
                           <span className="text-muted-foreground">Status</span>
                           <span className={`font-medium ${isPastDue ? 'text-destructive' : isUrgent ? 'text-orange-500' : 'text-muted-foreground'}`}>
-                            {isPastDue ? `${Math.abs(daysLeft)}d overdue` : daysLeft === 0 ? 'Due today' : `${daysLeft}d left`}
+                            {!quarter.filing ? 'Not tracked' : isPastDue ? `${Math.abs(daysLeft)}d overdue` : daysLeft === 0 ? 'Due today' : `${daysLeft}d left`}
                           </span>
                         </div>
                       )}
@@ -906,9 +881,9 @@ export default function TaxPage() {
                             className="w-full gap-1"
                             onClick={() => {
                               setFormData({
-                                name: `${quarter.label} ${CURRENT_YEAR} Estimated Tax`,
+                                name: `${quarter.label} ${selectedYear} Estimated Tax`,
                                 form_type: '1040-ES',
-                                tax_period_start: quarters.find(q => q.label === quarter.label)?.dueDate.replace(/\d{4}-\d{2}-\d{2}/, `${CURRENT_YEAR}-01-01`) || '',
+                                tax_period_start: taxQuarters(selectedYear).find(q=>q.label===quarter.label)?.start || '',
                                 tax_period_end: '',
                                 due_date: quarter.dueDate,
                                 amount_due: '',
@@ -998,7 +973,7 @@ export default function TaxPage() {
                   {accountType !== AccountType.personal && (
                     <Button variant="outline" onClick={handleSeedQuarterly} disabled={seeding} className="gap-2">
                       {seeding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
-                      Add {CURRENT_YEAR} Quarters
+                      Add {selectedYear} Quarters
                     </Button>
                   )}
                   <Button onClick={openCreate} className="gap-2">
@@ -1102,7 +1077,7 @@ export default function TaxPage() {
                 <CardHeader>
                   <CardTitle className="text-base">Income & Expense Inputs</CardTitle>
                   <p className="text-sm text-muted-foreground">
-                    Estimates use {CURRENT_YEAR} US tax rates. Consult a tax professional for accurate advice.
+                    Illustrative {selectedYear} federal estimate for a single filer with self-employment income only. Excludes credits, QBI, state tax, other wages, capital gains, and additional Medicare tax. This is not a payment instruction.
                   </p>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -1157,7 +1132,7 @@ export default function TaxPage() {
                     <span className="text-muted-foreground">Net Income</span>
                     <span className="font-medium">{formatCurrency(netIncome)}</span>
                   </div>
-                  {accountType !== AccountType.personal && (
+                  {canEstimate && (
                     <>
                       <div className="flex justify-between text-sm py-2 border-b">
                         <span className="text-muted-foreground">Self-Employment Tax (15.3%)</span>
@@ -1177,7 +1152,7 @@ export default function TaxPage() {
                     <span>Total Estimated Tax</span>
                     <span className={totalTax > 0 ? 'text-orange-600' : ''}>{formatCurrency(totalTax)}</span>
                   </div>
-                  {totalTax > 0 && accountType !== AccountType.personal && (
+                  {totalTax > 0 && (
                     <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-950 border border-blue-100 dark:border-blue-900">
                       <p className="text-sm font-medium">Quarterly payment</p>
                       <p className="text-2xl font-bold text-blue-600">{formatCurrency(quarterlyPayment)}</p>
@@ -1185,7 +1160,7 @@ export default function TaxPage() {
                     </div>
                   )}
                   <p className="text-xs text-muted-foreground pt-2">
-                    * Estimate only. Uses standard deduction ${accountType === AccountType.personal ? '14,600' : '14,600'} (single), does not include state taxes or retirement deductions.
+                    * Illustrative {selectedYear} single-filer estimate using a {formatCurrency(selectedYear === 2025 ? 15750 : 16100)} standard deduction. Excludes other wages, credits, QBI, state taxes, additional Medicare tax and retirement deductions.
                   </p>
                 </CardContent>
               </Card>
@@ -1365,11 +1340,11 @@ export default function TaxPage() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="rounded-lg border p-3">
                 <p className="text-xs text-muted-foreground">Expense total</p>
-                <p className="text-lg font-semibold">{formatCurrency(taxExpenseTotal)}</p>
+                <p className="text-lg font-semibold">{formatReportCurrency(taxExpenseTotal)}</p>
               </div>
               <div className="rounded-lg border p-3">
                 <p className="text-xs text-muted-foreground">Income total</p>
-                <p className="text-lg font-semibold">{formatCurrency(taxIncomeTotal)}</p>
+                <p className="text-lg font-semibold">{formatReportCurrency(taxIncomeTotal)}</p>
               </div>
               <div className="rounded-lg border p-3">
                 <p className="text-xs text-muted-foreground">CSV rows</p>

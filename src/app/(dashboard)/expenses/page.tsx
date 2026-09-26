@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
-import { getExpenses, createExpense, updateExpense, deleteExpense, uploadReceipt, getReceiptUrl } from '@/services/expenses.service'
+import { getExpenses, createExpense, updateExpense, archiveExpense, uploadReceipt, getReceiptUrl } from '@/services/expenses.service'
+import { RecordHistoryDialog } from '@/components/RecordHistoryDialog'
 import { getProjects } from '@/services/projects.service'
 import type { Expense, Project } from '@/types/models'
 import { ExpenseStatus, ExpenseCategory, expenseStatusLabels, expenseCategoryLabels } from '@/types/enums'
@@ -86,6 +87,7 @@ export default function ExpensesPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null)
+  const [historyId,setHistoryId]=useState<string|null>(null)
   const [saving, setSaving] = useState(false)
   const [smartCaptureText, setSmartCaptureText] = useState('')
   const [smartCaptureSummary, setSmartCaptureSummary] = useState<string | null>(null)
@@ -120,7 +122,6 @@ export default function ExpensesPage() {
       setExpenses(expensesData)
       setProjects(projectsData)
     } catch (err) {
-      console.error('Failed to load expenses:', err)
       const errorMessage = err instanceof Error ? err.message : 'Failed to load data'
       setError(errorMessage)
       toast.error(errorMessage)
@@ -129,7 +130,11 @@ export default function ExpensesPage() {
     }
   }
 
+  const createId = useRef<string>('')
+  const uploadedReceipt = useRef<{ file: File; path: string } | null>(null)
   const openCreateDialog = () => {
+    createId.current = crypto.randomUUID()
+    uploadedReceipt.current = null
     setSelectedExpense(null)
     setFormData({
       amount: '',
@@ -149,6 +154,7 @@ export default function ExpensesPage() {
   }
 
   const openEditDialog = (expense: Expense) => {
+    uploadedReceipt.current = null
     setSelectedExpense(expense)
     setFormData({
       amount: expense.amount.toString(),
@@ -172,11 +178,14 @@ export default function ExpensesPage() {
     setSaving(true)
 
     try {
-      const receiptPath = receiptFile ? await uploadReceipt(receiptFile) : selectedExpense?.receipt_path
+      if (receiptFile && uploadedReceipt.current?.file !== receiptFile) {
+        uploadedReceipt.current = { file: receiptFile, path: await uploadReceipt(receiptFile) }
+      }
+      const receiptPath = receiptFile ? uploadedReceipt.current?.path : selectedExpense?.receipt_path
       const expenseData = {
         user_id: user?.id!,
         amount: parseFloat(formData.amount),
-        currency: 'USD',
+        currency: selectedExpense?.currency ?? 'USD',
         category: formData.category,
         description: formData.description || undefined,
         merchant: formData.merchant || undefined,
@@ -184,21 +193,20 @@ export default function ExpensesPage() {
         project_id: formData.project_id || undefined,
         notes: formData.notes || undefined,
         receipt_path: receiptPath || undefined,
-        status: selectedExpense?.status ?? ExpenseStatus.draft,
+        status: selectedExpense?.status === ExpenseStatus.rejected ? ExpenseStatus.draft : selectedExpense?.status ?? ExpenseStatus.draft,
       }
 
       if (selectedExpense) {
-        await updateExpense(selectedExpense.id, expenseData)
+        await updateExpense(selectedExpense.id, expenseData, selectedExpense.updated_at)
         toast.success('Expense updated')
       } else {
-        await createExpense(expenseData)
+        await createExpense(expenseData, createId.current)
         toast.success('Expense created')
       }
       setDialogOpen(false)
       loadData()
     } catch (error) {
-      console.error('Failed to save expense:', JSON.stringify(error, null, 2), error)
-      toast.error(getErrorMessage(error, 'Failed to save expense'))
+      toast.error('Could not confirm the save. Reload and check for the expense before creating another.')
     } finally {
       setSaving(false)
     }
@@ -208,13 +216,12 @@ export default function ExpensesPage() {
     if (!selectedExpense) return
 
     try {
-      await deleteExpense(selectedExpense.id)
-      toast.success('Expense deleted')
+      await archiveExpense(selectedExpense.id, selectedExpense.updated_at)
+      toast.success('Expense archived; history preserved')
       setDeleteDialogOpen(false)
       setSelectedExpense(null)
       loadData()
     } catch (error) {
-      console.error('Failed to delete expense:', JSON.stringify(error, null, 2), error)
       toast.error(getErrorMessage(error, 'Failed to delete expense'))
     }
   }
@@ -400,6 +407,7 @@ export default function ExpensesPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
+                      <Button variant="ghost" size="sm" onClick={()=>setHistoryId(expense.id)}>History</Button>
                       {(expense.receipt_path || expense.receipt_url) && <Button variant="ghost" size="sm" onClick={async () => {
                         try { const url = await getReceiptUrl(expense); window.open(url, '_blank', 'noopener,noreferrer') }
                         catch { toast.error('Could not open receipt. Check your access and try again.') }
@@ -408,12 +416,16 @@ export default function ExpensesPage() {
                         variant="ghost"
                         size="icon"
                         onClick={() => openEditDialog(expense)}
+                        aria-label="Edit expense"
+                        disabled={!['DRAFT','REJECTED'].includes(expense.status)}
                       >
                         <Pencil className="w-4 h-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
+                        aria-label="Archive expense"
+                        disabled={!['DRAFT','REJECTED'].includes(expense.status)}
                         onClick={() => {
                           setSelectedExpense(expense)
                           setDeleteDialogOpen(true)
@@ -643,19 +655,20 @@ export default function ExpensesPage() {
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Expense</AlertDialogTitle>
+            <AlertDialogTitle>Archive Expense</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this expense? This action cannot be undone.
+              Archive this expense? Its record and history will be preserved.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
-              Delete
+              Archive
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {historyId&&<RecordHistoryDialog kind="expenses" id={historyId} onClose={()=>setHistoryId(null)} />}
     </div>
   )
 }

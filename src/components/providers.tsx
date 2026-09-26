@@ -7,7 +7,7 @@ import { AuthProvider } from '@/contexts/AuthContext'
 import { AppStateProvider } from '@/contexts/AppStateContext'
 import { Toaster } from '@/components/ui/sonner'
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({ children, nonce }: { children: React.ReactNode; nonce?: string }) {
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -22,6 +22,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider
+        nonce={nonce}
         attribute="class"
         defaultTheme="system"
         enableSystem

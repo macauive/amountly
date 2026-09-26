@@ -50,6 +50,9 @@ import { toast } from 'sonner'
 import { format, parseISO } from 'date-fns'
 import { formatDateOnly } from '@/lib/date-format'
 import { captureTimeEntryFromText } from '@/lib/time-ai'
+import { TimeBillingDialog, isTimeReserved } from '@/components/TimeBillingDialog'
+import { useCapability } from '@/hooks/useCapability'
+import { Capability } from '@/types/enums'
 
 function formatDuration(minutes: number | null | undefined): string {
   if (!minutes) return '-'
@@ -75,6 +78,8 @@ function getStatusVariant(status: TimeEntryStatus): 'default' | 'secondary' | 'd
 
 export default function TimeEntriesPage() {
   const { user } = useAuth()
+  const canBillTime = useCapability(Capability.editInvoices)
+  const [billingOpen, setBillingOpen] = useState(false)
   const [entries, setEntries] = useState<TimeEntry[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
@@ -93,6 +98,7 @@ export default function TimeEntriesPage() {
     start_time: '09:00',
     end_time: '17:00',
     notes: '',
+    billable_rate: '',
   })
 
   useEffect(() => {
@@ -112,8 +118,7 @@ export default function TimeEntriesPage() {
       setEntries(entriesData)
       setProjects(projectsData)
     } catch (err) {
-      console.error('Failed to load time entries:', err)
-      const errorMessage = err instanceof Error ? err.message : 'Failed to load data'
+      const errorMessage = 'Could not load time entries. Please try again.'
       setError(errorMessage)
       toast.error(errorMessage)
     } finally {
@@ -129,6 +134,7 @@ export default function TimeEntriesPage() {
       start_time: '09:00',
       end_time: '17:00',
       notes: '',
+      billable_rate: '',
     })
     setSmartTimeText('')
     setSmartTimeSummary(null)
@@ -145,6 +151,7 @@ export default function TimeEntriesPage() {
       start_time: format(startDate, 'HH:mm'),
       end_time: format(endDate, 'HH:mm'),
       notes: entry.notes || '',
+      billable_rate: String(entry.billable_rate ?? ''),
     })
     setSmartTimeText('')
     setSmartTimeSummary(null)
@@ -198,11 +205,12 @@ export default function TimeEntriesPage() {
       const entryData = {
         user_id: user?.id!,
         project_id: formData.project_id || undefined,
-        start_at: startAt,
-        end_at: endAt,
+        start_at: startDate.toISOString(),
+        end_at: endDate.toISOString(),
         duration_minutes: durationMinutes,
         notes: notes || undefined,
-        status: selectedEntry?.status ?? TimeEntryStatus.draft,
+        status: selectedEntry?.status === TimeEntryStatus.rejected ? TimeEntryStatus.draft : selectedEntry?.status ?? TimeEntryStatus.draft,
+        billable_rate: formData.billable_rate ? Number(formData.billable_rate) : 0,
       }
 
       if (selectedEntry) {
@@ -266,16 +274,17 @@ export default function TimeEntriesPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-wrap gap-3 justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold">Time Entries</h1>
           <p className="text-muted-foreground">Track and manage your work hours</p>
         </div>
-        <Button onClick={openCreateDialog} className="gap-2">
+        <div className="flex flex-wrap gap-2">{canBillTime && <Button variant="outline" onClick={() => setBillingOpen(true)}>Invoice time</Button>}<Button onClick={openCreateDialog} className="gap-2">
           <Plus className="w-4 h-4" />
           Log Time
-        </Button>
+        </Button></div>
       </div>
+      {billingOpen && <TimeBillingDialog entries={entries} projects={projects} business={user?.account_type === 'business'} onClose={() => setBillingOpen(false)} />}
 
       {/* Summary Card */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -352,7 +361,7 @@ export default function TimeEntriesPage() {
                     </TableCell>
                     <TableCell>
                       <Badge variant={getStatusVariant(entry.status)}>
-                        {timeEntryStatusLabels[entry.status]}
+                        {isTimeReserved(entry) ? 'Reserved / invoiced' : timeEntryStatusLabels[entry.status]}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
@@ -360,12 +369,16 @@ export default function TimeEntriesPage() {
                         variant="ghost"
                         size="icon"
                         onClick={() => openEditDialog(entry)}
+                        aria-label="Edit time entry"
+                        disabled={isTimeReserved(entry) || !['DRAFT','REJECTED'].includes(entry.status)}
                       >
                         <Pencil className="w-4 h-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
+                        aria-label="Delete time entry"
+                        disabled={isTimeReserved(entry) || !['DRAFT','REJECTED'].includes(entry.status)}
                         onClick={() => {
                           setSelectedEntry(entry)
                           setDeleteDialogOpen(true)
@@ -384,7 +397,7 @@ export default function TimeEntriesPage() {
 
       {/* Create/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {selectedEntry ? 'Edit Time Entry' : 'Log Time'}
@@ -508,6 +521,7 @@ export default function TimeEntriesPage() {
                   rows={3}
                 />
               </div>
+              <div className="space-y-2"><Label htmlFor="billable-rate">Hourly billing rate</Label><Input id="billable-rate" type="number" min="0" max="999999" step="0.01" value={formData.billable_rate} onChange={event => setFormData({ ...formData, billable_rate: event.target.value })} /><p className="text-xs text-muted-foreground">Leave blank or zero for non-billable time. Choose its currency when creating an invoice.</p></div>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>

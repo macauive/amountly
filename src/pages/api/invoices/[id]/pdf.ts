@@ -36,7 +36,7 @@ export default async function handler(request: NextApiRequest, response: NextApi
       || JSON.stringify(invoice).length > 250000) return failure(422)
     const payments = []
     for (let offset = 0; ; offset += 200) {
-      const page = await client.from('invoice_payments').select('id,amount').eq('invoice_id',id).order('id').range(offset,offset+199)
+      const page = await client.from('invoice_payments').select('id,amount,reversal:invoice_payment_reversals(id)').eq('invoice_id',id).order('id').range(offset,offset+199)
       if (page.error) return failure(503)
       payments.push(...(page.data ?? []))
       if (!page.data || page.data.length < 200) break

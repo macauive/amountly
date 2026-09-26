@@ -103,6 +103,14 @@ test('PDF preserves issued identity, calendar dates, currency, partial balances 
     const text = execFileSync('pdftotext', ['-layout', filename, '-'], { encoding: 'utf8' })
     for (const expected of ['Issued client','Original address','September 25, 2026','Payments recorded','Balance due','€100.00','€200.00','Work item 01','Work item 60','Page 2 of']) assert.ok(text.includes(expected), expected)
     assert.ok(!text.includes('Changed identity') && !text.includes('Changed city'))
+    const corrected = mapInvoice({ ...invoice, status: 'SENT', payments: [
+      { id: 'original', amount: 100, reversal: [{ id: 'correction' }] }, { id: 'replacement', amount: 50 },
+    ] })
+    assert.equal(corrected.amount_paid, 50)
+    assert.equal(corrected.balance_due, 250)
+    fs.writeFileSync(filename, await renderer.renderToBuffer(React.createElement(InvoicePDF, { invoice: corrected })))
+    const correctedText = execFileSync('pdftotext', [filename, '-'], { encoding: 'utf8' })
+    assert.ok(correctedText.includes('€50.00') && correctedText.includes('€250.00'))
     const legacy = { ...invoice, status: 'PAID', payments: [], amount_paid: 0, balance_due: 0, line_items: invoice.line_items.slice(0,1) }
     fs.writeFileSync(filename, await renderer.renderToBuffer(React.createElement(InvoicePDF, { invoice: legacy })))
     assert.match(execFileSync('pdftotext', [filename, '-'], { encoding: 'utf8' }), /Payment details\s+are unavailable/)

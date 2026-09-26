@@ -122,6 +122,7 @@ export default function SettingsPage() {
     default_currency: 'USD',
     payment_terms: '30',
     date_format: 'MM/DD/YYYY',
+    accounting_basis: 'cash',
   })
   const [savingTax, setSavingTax] = useState(false)
 
@@ -149,6 +150,7 @@ export default function SettingsPage() {
         default_currency: String(prefs.default_currency ?? 'USD'),
         payment_terms: String(prefs.payment_terms ?? '30'),
         date_format: String(prefs.date_format ?? 'MM/DD/YYYY'),
+        accounting_basis: String(prefs.accounting_basis ?? 'cash'),
       })
       const np = ((prefs.notifications || {}) as Record<string, boolean>)
       setNotifPrefs({
@@ -191,7 +193,7 @@ export default function SettingsPage() {
         .from('users')
         .update({ name: profile.name, phone: profile.phone || null, timezone: profile.timezone || null })
         .eq('id', user.id)
-      if (error) throw new Error(error.message)
+      if (error) throw new Error('Could not save these settings. Check the fields and your access.')
       await refreshUser()
       toast.success('Profile saved')
     } catch (err) {
@@ -207,7 +209,7 @@ export default function SettingsPage() {
     setSavingPwd(true)
     try {
       const { error } = await supabase.auth.updateUser({ password: pwd.newPassword })
-      if (error) throw new Error(error.message)
+      if (error) throw new Error('Could not save these settings. Check the fields and your access.')
       setPwd({ newPassword: '', confirm: '' })
       toast.success('Password updated')
     } catch (err) {
@@ -235,7 +237,7 @@ export default function SettingsPage() {
           tax_id: org.tax_id || null,
         })
         .eq('id', organization.id)
-      if (error) throw new Error(error.message)
+      if (error) throw new Error('Could not save these settings. Check the fields and your access.')
       await refreshUser()
       toast.success('Organization saved')
     } catch (err) {
@@ -249,21 +251,15 @@ export default function SettingsPage() {
     if (!user) return
     setSavingTax(true)
     try {
-      const current = (user.preferences || {}) as Record<string, unknown>
-      const { error } = await supabase
-        .from('users')
-        .update({
-          preferences: {
-            ...current,
-            default_tax_rate: parseFloat(taxPrefs.default_tax_rate) || 0,
-            fiscal_year_start: parseInt(taxPrefs.fiscal_year_start) || 1,
-            default_currency: taxPrefs.default_currency,
-            payment_terms: parseInt(taxPrefs.payment_terms) || 30,
-            date_format: taxPrefs.date_format,
-          },
-        })
-        .eq('id', user.id)
-      if (error) throw new Error(error.message)
+      const { error } = await supabase.rpc('set_own_preferences', { p_patch: {
+        default_tax_rate: Number(taxPrefs.default_tax_rate),
+        fiscal_year_start: Number(taxPrefs.fiscal_year_start),
+        default_currency: taxPrefs.default_currency,
+        payment_terms: Number(taxPrefs.payment_terms),
+        date_format: taxPrefs.date_format,
+        accounting_basis: taxPrefs.accounting_basis,
+      } })
+      if (error) throw new Error('Could not save these settings. Check the fields and your access.')
       await refreshUser()
       toast.success('Tax & billing preferences saved')
     } catch (err) {
@@ -277,12 +273,8 @@ export default function SettingsPage() {
     if (!user) return
     setSavingNotif(true)
     try {
-      const current = (user.preferences || {}) as Record<string, unknown>
-      const { error } = await supabase
-        .from('users')
-        .update({ preferences: { ...current, notifications: notifPrefs } })
-        .eq('id', user.id)
-      if (error) throw new Error(error.message)
+      const { error } = await supabase.rpc('set_own_preferences',{ p_patch:{notifications:notifPrefs} })
+      if (error) throw new Error('Could not save these settings. Check the fields and your access.')
       await refreshUser()
       toast.success('Notification preferences saved')
     } catch (err) {
@@ -308,6 +300,7 @@ export default function SettingsPage() {
   // Export items gated by capability
   const exportItems = [
     { key: 'invoice_payments', label: 'Payments received', file: 'amountly-payments.csv', cap: Capability.viewInvoices },
+    { key: 'invoice_payment_reversals', label: 'Payment corrections', file: 'amountly-payment-corrections.csv', cap: Capability.viewInvoices },
     { key: 'invoices', label: 'Invoices', file: 'amountly-invoices.csv', cap: Capability.viewInvoices },
     { key: 'invoice_line_items', label: 'Invoice Line Items', file: 'amountly-invoice-lines.csv', cap: Capability.viewInvoices },
     { key: 'expenses', label: 'Expenses', file: 'amountly-expenses.csv', cap: Capability.viewOwnExpenses },
@@ -529,7 +522,7 @@ export default function SettingsPage() {
           <Card>
             <CardHeader>
               <CardTitle>Tax & Billing Defaults</CardTitle>
-              <CardDescription>Defaults applied when creating invoices, bills, and reports</CardDescription>
+              <CardDescription>Defaults for manual invoices and Tax Prep reports</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
@@ -604,6 +597,13 @@ export default function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="report-basis">Default income basis</Label>
+                <select id="report-basis" className="flex h-10 rounded-md border bg-background px-3 text-sm" value={taxPrefs.accounting_basis} onChange={event=>setTaxPrefs({...taxPrefs,accounting_basis:event.target.value})}>
+                  <option value="cash">Cash received</option><option value="accrual">Invoices issued</option>
+                </select>
+                <p className="text-sm text-muted-foreground">Tax Prep uses calendar years. Fiscal-year and date-format preferences are saved for future report formatting.</p>
               </div>
               <Button onClick={handleSaveTaxPrefs} disabled={savingTax}>
                 {savingTax ? 'Saving…' : 'Save Preferences'}

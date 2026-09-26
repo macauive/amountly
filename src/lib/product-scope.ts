@@ -1,4 +1,5 @@
-export const showAdvancedModules = process.env.NEXT_PUBLIC_SHOW_ADVANCED_MODULES === 'true'
+// Enable only alongside reviewed database commands in a future release.
+export const showAdvancedModules = false
 
 export type DeferredModuleKey = 'accounting' | 'payroll' | 'inventory' | 'team'
 

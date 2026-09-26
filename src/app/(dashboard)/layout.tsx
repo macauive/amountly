@@ -153,8 +153,8 @@ export default function DashboardLayout({
             {[
               { label: 'Overview', ids: ['home'] },
               { label: 'Money in', ids: ['invoices'] },
-              { label: 'Money out', ids: ['bills', 'expenses'] },
-              { label: 'Contacts', ids: ['clients'] },
+              { label: 'Money out', ids: ['review', 'bills', 'expenses'] },
+              { label: 'Contacts', ids: ['contacts'] },
               { label: 'Work', ids: ['projects', 'time'] },
               { label: 'Reports & taxes', ids: ['tax', 'accounting'] },
               { label: 'Workspace', ids: ['team', 'payroll', 'inventory', 'settings'] },

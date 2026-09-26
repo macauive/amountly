@@ -13,7 +13,7 @@ export async function getInvoices(filters?: InvoiceFilters): Promise<Invoice[]> 
   const supabase = getSupabaseClient()
   let query = supabase
     .from('invoices')
-    .select('*, client:clients(*), project:projects(*)')
+    .select('*, client:clients(*), project:projects(*), time_links:invoice_time_links(time_entry_id,released_at)')
     .order('created_at', { ascending: false }).order('id')
 
   if (filters?.status) {
@@ -45,7 +45,7 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
   const supabase = getSupabaseClient()
   const { data, error } = await supabase
     .from('invoices')
-    .select('*, client:clients(*), project:projects(*), line_items:invoice_line_items(*), events:invoice_events(*)')
+    .select('*, client:clients(*), project:projects(*), line_items:invoice_line_items(*), events:invoice_events(*), time_links:invoice_time_links(time_entry_id,released_at)')
     .eq('id', id)
     .single()
 
@@ -56,12 +56,12 @@ export async function getInvoice(id: string): Promise<Invoice | null> {
 
 async function getAllPayments(invoiceId?: string): Promise<InvoicePayment[]> {
   const rows: InvoicePayment[] = []
-  let query = getSupabaseClient().from('invoice_payments').select('id,invoice_id,amount,paid_on,method,reference,created_at').order('id')
+  let query = getSupabaseClient().from('invoice_payments').select('id,invoice_id,amount,paid_on,method,reference,created_at,reversal:invoice_payment_reversals(id,reason,created_at)').order('id')
   if (invoiceId) query = query.eq('invoice_id', invoiceId)
   for (let offset = 0; ; offset += 200) {
     const { data, error } = await query.range(offset, offset + 199)
     if (error) throw new Error('Could not load payments. Please try again.')
-    rows.push(...(data ?? []) as InvoicePayment[])
+    rows.push(...(data ?? []) as unknown as InvoicePayment[])
     if (!data || data.length < 200) break
   }
   return rows
@@ -69,7 +69,7 @@ async function getAllPayments(invoiceId?: string): Promise<InvoicePayment[]> {
 
 function workflowError(code?: string): Error & { code?: string } {
   const messages: Record<string, string> = {
-    'PT409': 'This invoice changed in another window. Reload it before saving.',
+    'PT409': 'This record changed or the selected time is already reserved. Reload before retrying.',
     '23505': 'That invoice number or request already exists. Reload before retrying.',
     '42501': 'You do not have permission to make this change.',
     '22023': 'Check the invoice state, dates, amounts, and outstanding balance before retrying.',
@@ -120,4 +120,17 @@ export async function recordInvoicePayment(invoiceId: string, payment: Omit<Invo
     p_paid_on: payment.paid_on, p_method: payment.method, p_reference: payment.reference,
   })
   if (error) throw workflowError(error.code)
+}
+
+export async function reverseInvoicePayment(id: string, paymentId: string, reason: string): Promise<void> {
+  const { error } = await getSupabaseClient().rpc('reverse_invoice_payment', { p_id: id, p_payment_id: paymentId, p_reason: reason })
+  if (error) throw workflowError(error.code)
+}
+
+export async function createInvoiceFromTime(id: string, entryIds: string[], data: {
+  project_id: string; client_id: string; issue_date: string; due_date: string; currency: string; tax_rate: number
+}): Promise<string> {
+  const { data: saved, error } = await getSupabaseClient().rpc('create_invoice_from_time', { p_id: id, p_entry_ids: entryIds, p_data: data })
+  if (error) throw workflowError(error.code)
+  return String(saved)
 }

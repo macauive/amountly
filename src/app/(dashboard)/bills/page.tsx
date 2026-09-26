@@ -5,7 +5,8 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useAppState } from '@/contexts/AppStateContext'
 
 // Personal bills
-import { getBills, createBill, updateBill, deleteBill, markBillPaid } from '@/services/bills.service'
+import { getBills, createBill, updateBill, cancelBill, markBillPaid } from '@/services/bills.service'
+import { RecordHistoryDialog } from '@/components/RecordHistoryDialog'
 import type { Bill } from '@/types/models'
 import {
   BillStatus,
@@ -21,10 +22,10 @@ import {
   getVendors,
   createVendor,
   updateVendor,
-  deleteVendor,
+  archiveVendor,
   getVendorBills,
   createVendorBill,
-  deleteVendorBill,
+  cancelVendorBill,
   markVendorBillPaid,
   generateBillNumber,
   getPurchaseOrders,
@@ -159,6 +160,10 @@ function PersonalBillsView() {
   const [error, setError] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [historyId,setHistoryId]=useState<string|null>(null)
+  const [paymentBill,setPaymentBill]=useState<Bill|null>(null)
+  const [paidOn,setPaidOn]=useState(format(new Date(),'yyyy-MM-dd'))
+  const billRequestId=useRef('')
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null)
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState('upcoming')
@@ -184,6 +189,7 @@ function PersonalBillsView() {
   }
 
   const openCreate = () => {
+    billRequestId.current=''
     setSelectedBill(null)
     setFormData({ name: '', payee: '', amount: '', category: BillCategory.other, due_date: format(addDays(new Date(), 30), 'yyyy-MM-dd'), recurrence: BillRecurrence.monthly, auto_pay: false, notes: '' })
     setDialogOpen(true)
@@ -198,23 +204,22 @@ function PersonalBillsView() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault(); setSaving(true)
     try {
-      const data = { user_id: user?.id!, name: formData.name, payee: formData.payee, amount: parseFloat(formData.amount), currency: 'USD', category: formData.category, due_date: formData.due_date, status: BillStatus.upcoming, recurrence: formData.recurrence, auto_pay: formData.auto_pay, notes: formData.notes || undefined }
-      if (selectedBill) { await updateBill(selectedBill.id, data); toast.success('Bill updated') }
-      else { await createBill(data); toast.success('Bill added') }
+      const data = { user_id: user?.id!, name: formData.name, payee: formData.payee, amount: parseFloat(formData.amount), currency: selectedBill?.currency ?? 'USD', category: formData.category, due_date: formData.due_date, status: BillStatus.upcoming, recurrence: formData.recurrence, auto_pay: formData.auto_pay, notes: formData.notes || undefined }
+      if (selectedBill) { await updateBill(selectedBill.id, data, selectedBill.updated_at); toast.success('Bill updated') }
+      else { billRequestId.current ||= crypto.randomUUID(); await createBill(data,billRequestId.current); billRequestId.current=''; toast.success('Bill added') }
       setDialogOpen(false); loadData()
-    } catch { toast.error('Failed to save bill') }
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Failed to save bill') }
     finally { setSaving(false) }
   }
 
   const handleDelete = async () => {
     if (!selectedBill) return
-    try { await deleteBill(selectedBill.id); toast.success('Bill deleted'); setDeleteDialogOpen(false); loadData() }
-    catch { toast.error('Failed to delete bill') }
+    try { await cancelBill(selectedBill); toast.success('Bill cancelled; history preserved'); setDeleteDialogOpen(false); loadData() }
+    catch (error) { toast.error(error instanceof Error ? error.message : 'Failed to cancel bill') }
   }
 
   const handleMarkPaid = async (bill: Bill) => {
-    try { await markBillPaid(bill.id); toast.success('Marked as paid'); loadData() }
-    catch { toast.error('Failed to update bill') }
+    setPaymentBill(bill); setPaidOn(format(new Date(),'yyyy-MM-dd'))
   }
 
   const getDaysLabel = (dueDate: string) => {
@@ -356,8 +361,9 @@ function PersonalBillsView() {
                         {bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled && (
                           <Button variant="ghost" size="icon" title="Mark Paid" onClick={() => handleMarkPaid(bill)}><CheckCircle className="w-4 h-4 text-green-600" /></Button>
                         )}
-                        <Button variant="ghost" size="icon" onClick={() => openEdit(bill)}><Pencil className="w-4 h-4" /></Button>
-                        <Button variant="ghost" size="icon" onClick={() => { setSelectedBill(bill); setDeleteDialogOpen(true) }}><Trash2 className="w-4 h-4" /></Button>
+                        <Button variant="ghost" size="icon" aria-label="Edit bill" disabled={['paid','cancelled'].includes(bill.status)} onClick={() => openEdit(bill)}><Pencil className="w-4 h-4" /></Button>
+                        <Button variant="ghost" size="sm" onClick={()=>setHistoryId(bill.id)}>History</Button>
+                        <Button variant="ghost" size="icon" aria-label="Cancel bill" disabled={['paid','cancelled'].includes(bill.status)} onClick={() => { setSelectedBill(bill); setDeleteDialogOpen(true) }}><Trash2 className="w-4 h-4" /></Button>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -411,10 +417,12 @@ function PersonalBillsView() {
 
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Delete Bill</AlertDialogTitle><AlertDialogDescription>Delete &quot;{selectedBill?.name}&quot;? This cannot be undone.</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">Delete</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader><AlertDialogTitle>Cancel Bill</AlertDialogTitle><AlertDialogDescription>Cancel &quot;{selectedBill?.name}&quot;? Its record and history will remain available.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>Keep bill</AlertDialogCancel><AlertDialogAction onClick={handleDelete}>Confirm cancellation</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {historyId&&<RecordHistoryDialog kind="bills" id={historyId} onClose={()=>setHistoryId(null)} />}
+      <Dialog open={!!paymentBill} onOpenChange={open=>{if(!open&&!saving)setPaymentBill(null)}}><DialogContent><DialogHeader><DialogTitle>Record bill payment</DialogTitle><DialogDescription>Record when you paid this bill. This does not send money or enable AutoPay.</DialogDescription></DialogHeader><p>{paymentBill?.name} · {paymentBill?.amount} {paymentBill?.currency}</p><Label htmlFor="bill-paid-on">Date paid</Label><Input id="bill-paid-on" type="date" max={format(new Date(),'yyyy-MM-dd')} value={paidOn} onChange={event=>setPaidOn(event.target.value)} /><Button disabled={saving||!paidOn} onClick={async()=>{if(!paymentBill)return;setSaving(true);try{await markBillPaid(paymentBill,paidOn);setPaymentBill(null);toast.success('Payment recorded');await loadData()}catch(error){toast.error(error instanceof Error?error.message:'Could not record payment')}finally{setSaving(false)}}}>Confirm payment record</Button></DialogContent></Dialog>
     </div>
   )
 }
@@ -424,6 +432,10 @@ function PersonalBillsView() {
 // ─────────────────────────────────────────────────────────────
 
 function AccountsPayableView() {
+  const [payableTab, setPayableTab] = useState('bills')
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('tab') === 'vendors') setPayableTab('vendors')
+  }, [])
   const { user } = useAuth()
   const { hasCapability } = useAppState()
   const canManageVendors = hasCapability(Capability.manageVendors)
@@ -445,6 +457,9 @@ function AccountsPayableView() {
   // Bill dialog
   const [billDialog, setBillDialog] = useState(false)
   const [savingBill, setSavingBill] = useState(false)
+  const [paymentBill,setPaymentBill]=useState<VendorBill|null>(null)
+  const [paidOn,setPaidOn]=useState(format(new Date(),'yyyy-MM-dd'))
+  const [historyId,setHistoryId]=useState<string|null>(null)
   const [billForm, setBillForm] = useState({ vendor_id: '', bill_number: '', issue_date: format(new Date(), 'yyyy-MM-dd'), due_date: format(addDays(new Date(), 30), 'yyyy-MM-dd'), tax_rate: '0', notes: '' })
   const [billLines, setBillLines] = useState<LineItemRow[]>([{ description: '', quantity: 1, rate: 0, amount: 0 }])
   const [billLineCaptureText, setBillLineCaptureText] = useState('')
@@ -496,7 +511,6 @@ function AccountsPayableView() {
       else { await createVendor(input); toast.success('Vendor created') }
       setVendorDialog(false); loadData()
     } catch (error) {
-      console.error('Failed to save vendor:', error)
       toast.error(getErrorMessage(error, 'Failed to save vendor'))
     }
     finally { setSavingVendor(false) }
@@ -559,7 +573,6 @@ function AccountsPayableView() {
       await createVendorBill(input as any, lines)
       toast.success('Bill created'); setBillDialog(false); loadData()
     } catch (error) {
-      console.error('Failed to save vendor bill:', error)
       toast.error(getErrorMessage(error, 'Failed to save bill'))
     }
     finally { setSavingBill(false) }
@@ -595,7 +608,6 @@ function AccountsPayableView() {
       await createPurchaseOrder(input as any, lines)
       toast.success('PO created'); setPODialog(false); loadData()
     } catch (error) {
-      console.error('Failed to save purchase order:', error)
       toast.error(getErrorMessage(error, 'Failed to save PO'))
     }
     finally { setSavingPO(false) }
@@ -611,10 +623,10 @@ function AccountsPayableView() {
   const confirmDelete = async () => {
     if (!deleteTarget) return
     try {
-      if (deleteTarget.type === 'vendor') await deleteVendor(deleteTarget.id)
-      else if (deleteTarget.type === 'bill') await deleteVendorBill(deleteTarget.id)
+      if (deleteTarget.type === 'vendor') await archiveVendor(deleteTarget.id)
+      else if (deleteTarget.type === 'bill') await cancelVendorBill(bills.find(bill=>bill.id===deleteTarget.id)!)
       else await deletePurchaseOrder(deleteTarget.id)
-      toast.success('Deleted'); setDeleteDialog(false); loadData()
+      toast.success(deleteTarget.type==='bill'?'Bill cancelled':deleteTarget.type==='vendor'?'Vendor archived':'Purchase order deleted'); setDeleteDialog(false); loadData()
     } catch { toast.error('Failed to delete') }
   }
 
@@ -711,7 +723,7 @@ function AccountsPayableView() {
       </Card>
 
       {/* Tabs */}
-      <Tabs defaultValue="bills">
+      <Tabs value={payableTab} onValueChange={setPayableTab}>
         <TabsList>
           <TabsTrigger value="bills" className="gap-2"><FileStack className="w-4 h-4" />Bills ({bills.length})</TabsTrigger>
           <TabsTrigger value="vendors" className="gap-2"><Building2 className="w-4 h-4" />Vendors ({vendors.length})</TabsTrigger>
@@ -748,9 +760,10 @@ function AccountsPayableView() {
                         <TableCell><Badge variant={getBillStatusVariant(bill.status)}>{billStatusLabels[bill.status]}</Badge></TableCell>
                         <TableCell className="text-right">
                           {bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled && canManageBills && (
-                            <Button variant="ghost" size="icon" title="Mark Paid" onClick={() => markVendorBillPaid(bill.id).then(() => { toast.success('Marked as paid'); loadData() })}><CheckCircle className="w-4 h-4 text-green-600" /></Button>
+                            <Button variant="ghost" size="icon" title="Mark Paid" onClick={() => {setPaymentBill(bill);setPaidOn(format(new Date(),'yyyy-MM-dd'))}}><CheckCircle className="w-4 h-4 text-green-600" /></Button>
                           )}
-                          {canManageBills && <Button variant="ghost" size="icon" onClick={() => { setDeleteTarget({ type: 'bill', id: bill.id, label: bill.bill_number }); setDeleteDialog(true) }}><Trash2 className="w-4 h-4" /></Button>}
+                          <Button variant="ghost" size="sm" onClick={()=>setHistoryId(bill.id)}>History</Button>
+                          {canManageBills && !['paid','cancelled'].includes(bill.status) && <Button title="Cancel bill" variant="ghost" size="icon" onClick={() => { setDeleteTarget({ type: 'bill', id: bill.id, label: bill.bill_number }); setDeleteDialog(true) }}><Trash2 className="w-4 h-4" /></Button>}
                         </TableCell>
                       </TableRow>
                     )
@@ -994,11 +1007,13 @@ function AccountsPayableView() {
         </DialogContent>
       </Dialog>
 
+      {historyId&&<RecordHistoryDialog kind="vendor_bills" id={historyId} onClose={()=>setHistoryId(null)} />}
+      <Dialog open={!!paymentBill} onOpenChange={open=>{if(!open&&!savingBill)setPaymentBill(null)}}><DialogContent><DialogHeader><DialogTitle>Record vendor bill payment</DialogTitle><DialogDescription>Record money already paid to the vendor. This does not initiate a transfer.</DialogDescription></DialogHeader><p>{paymentBill?.bill_number} · {paymentBill?.total} {paymentBill?.currency}</p><Label htmlFor="vendor-paid-on">Date paid</Label><Input id="vendor-paid-on" type="date" min={paymentBill?.issue_date} max={format(new Date(),'yyyy-MM-dd')} value={paidOn} onChange={event=>setPaidOn(event.target.value)} /><Button disabled={savingBill||!paidOn} onClick={async()=>{if(!paymentBill)return;setSavingBill(true);try{await markVendorBillPaid(paymentBill,paidOn);setPaymentBill(null);toast.success('Payment recorded');await loadData()}catch(error){toast.error(error instanceof Error?error.message:'Could not record payment')}finally{setSavingBill(false)}}}>Confirm payment record</Button></DialogContent></Dialog>
       {/* ── Delete Confirmation ── */}
       <AlertDialog open={deleteDialog} onOpenChange={setDeleteDialog}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Delete {deleteTarget?.type === 'vendor' ? 'Vendor' : deleteTarget?.type === 'bill' ? 'Bill' : 'Purchase Order'}</AlertDialogTitle><AlertDialogDescription>Delete &quot;{deleteTarget?.label}&quot;? This cannot be undone.</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground">Delete</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader><AlertDialogTitle>{deleteTarget?.type === 'bill' ? 'Cancel' : deleteTarget?.type === 'vendor' ? 'Archive' : 'Delete'} {deleteTarget?.type === 'vendor' ? 'Vendor' : deleteTarget?.type === 'bill' ? 'Bill' : 'Purchase Order'}</AlertDialogTitle><AlertDialogDescription>{deleteTarget?.type === 'bill' ? 'Cancel this bill and preserve its history?' : deleteTarget?.type === 'vendor' ? 'Archive this vendor and preserve linked records?' : `Delete ${deleteTarget?.label}? This cannot be undone.`}</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground">Confirm</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>

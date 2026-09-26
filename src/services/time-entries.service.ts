@@ -13,8 +13,8 @@ export async function getTimeEntries(filters?: TimeEntryFilters): Promise<TimeEn
   const supabase = getSupabaseClient()
   let query = supabase
     .from('time_entries')
-    .select('*, project:projects(*), task:tasks(*)')
-    .order('start_at', { ascending: false })
+    .select('*, project:projects(*), task:tasks(*), billing_links:invoice_time_links(invoice_id,released_at)')
+    .order('start_at', { ascending: false }).order('id')
 
   if (filters?.startDate) {
     query = query.gte('start_at', filters.startDate)
@@ -29,10 +29,14 @@ export async function getTimeEntries(filters?: TimeEntryFilters): Promise<TimeEn
     query = query.eq('status', filters.status)
   }
 
-  const { data, error } = await query
-
-  if (error) throw error
-  return data as TimeEntry[]
+  const rows: TimeEntry[] = []
+  for (let offset = 0; ; offset += 200) {
+    const { data, error } = await query.range(offset, offset + 199)
+    if (error) throw new Error('Could not load time entries. Please try again.')
+    rows.push(...(data ?? []) as TimeEntry[])
+    if (!data || data.length < 200) break
+  }
+  return rows
 }
 
 export async function getTimeEntry(id: string): Promise<TimeEntry | null> {

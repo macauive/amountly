@@ -150,6 +150,7 @@ export interface TimeEntry {
   project?: Project
   task?: Task
   user?: User
+  billing_links?: { invoice_id: string; released_at?: string | null }[]
 }
 
 // ============================================================
@@ -185,6 +186,7 @@ export interface Invoice {
   balance_due?: number
   workflow_version?: number
   issued_snapshot?: { client?: Partial<Client> }
+  time_links?: { time_entry_id: string; released_at?: string | null }[]
 }
 
 export interface InvoicePayment {
@@ -195,11 +197,12 @@ export interface InvoicePayment {
   method: 'bank_transfer' | 'card' | 'cash' | 'check' | 'other'
   reference: string
   created_at: string
+  reversal?: { id: string; reason: string; created_at: string } | null
 }
 
 export interface InvoiceEvent {
   id: string
-  action: 'created' | 'updated' | 'issued' | 'payment_recorded' | 'cancelled'
+  action: 'created' | 'updated' | 'issued' | 'payment_recorded' | 'payment_reversed' | 'time_reserved' | 'cancelled'
   created_at: string
 }
 

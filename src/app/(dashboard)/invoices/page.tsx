@@ -119,6 +119,7 @@ export default function InvoicesPage() {
     issue_date: format(new Date(), 'yyyy-MM-dd'),
     due_date: format(addDays(new Date(), 30), 'yyyy-MM-dd'),
     tax_rate: '0',
+    currency: 'USD',
     notes: '',
   })
 
@@ -168,8 +169,9 @@ export default function InvoicesPage() {
       client_id: '',
       invoice_number: invoiceNumber,
       issue_date: format(new Date(), 'yyyy-MM-dd'),
-      due_date: format(addDays(new Date(), 30), 'yyyy-MM-dd'),
-      tax_rate: '0',
+      due_date: format(addDays(new Date(), Number(user?.preferences?.payment_terms ?? 30)), 'yyyy-MM-dd'),
+      tax_rate: String(user?.preferences?.default_tax_rate ?? 0),
+      currency: String(user?.preferences?.default_currency ?? 'USD'),
       notes: '',
     })
     setLineItems([{ description: '', quantity: 1, rate: 0, amount: 0 }])
@@ -181,7 +183,7 @@ export default function InvoicesPage() {
   const openEditDialog = async (row: Invoice) => {
     let invoice: Invoice | null
     try { invoice = await getInvoice(row.id) } catch { toast.error('Could not load the draft. Try again.'); return }
-    if (!invoice || invoice.status !== InvoiceStatus.draft) { toast.error('Only drafts can be edited.'); return }
+    if (!invoice || invoice.status !== InvoiceStatus.draft || invoice.time_links?.length) { toast.error('Only manual drafts can be edited. Delete a time draft and recreate it to change its details.'); return }
     setSelectedInvoice(invoice)
     setFormData({
       client_id: invoice.client_id || '',
@@ -189,6 +191,7 @@ export default function InvoicesPage() {
       issue_date: invoice.issue_date.slice(0, 10),
       due_date: invoice.due_date.slice(0, 10),
       tax_rate: String(invoice.tax_rate ?? 0),
+      currency: invoice.currency,
       notes: invoice.notes || '',
     })
     setLineItems(
@@ -295,7 +298,7 @@ export default function InvoicesPage() {
         tax_rate: taxRate,
         tax_amount: taxAmount,
         total,
-        currency: selectedInvoice?.currency ?? 'USD',
+        currency: formData.currency,
         status: InvoiceStatus.draft,
         notes: notes || undefined,
       }
@@ -403,7 +406,7 @@ export default function InvoicesPage() {
   }
 
   const { subtotal, taxAmount, total } = calculateTotals()
-  const invoiceMoney = (amount: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: selectedInvoice?.currency ?? 'USD' }).format(amount)
+  const invoiceMoney = (amount: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: formData.currency }).format(amount)
 
   return (
     <div className="p-6 space-y-6">
@@ -557,7 +560,7 @@ export default function InvoicesPage() {
                         size="icon"
                         onClick={() => openEditDialog(invoice)}
                         title="Edit draft"
-                        disabled={!canEdit || invoice.status !== InvoiceStatus.draft}
+                        disabled={!canEdit || invoice.status !== InvoiceStatus.draft || !!invoice.time_links?.length}
                       >
                         <Pencil className="w-4 h-4" />
                       </Button>
@@ -653,6 +656,12 @@ export default function InvoicesPage() {
                     onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
                     required
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="invoice_currency">Currency</Label>
+                  <select id="invoice_currency" className="flex h-10 w-full rounded-md border bg-background px-3 text-sm" value={formData.currency} onChange={event => setFormData({ ...formData, currency: event.target.value })}>
+                    {['USD', 'EUR', 'GBP', 'CAD', 'AUD'].map(currency => <option key={currency}>{currency}</option>)}
+                  </select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="tax_rate">Tax Rate (%)</Label>

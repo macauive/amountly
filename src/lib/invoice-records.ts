@@ -52,9 +52,9 @@ export function mapInvoice(row: unknown): Invoice {
   const invoice = (row ?? {}) as InvoiceRow
 
   const payments = Array.isArray(invoice.payments)
-    ? invoice.payments.map(p => ({ ...p, amount: Number(p.amount) })) as InvoicePayment[] : []
+    ? invoice.payments.map(p => ({ ...p, amount: Number(p.amount), reversal: Array.isArray(p.reversal) ? p.reversal[0] ?? null : p.reversal ?? null })) as InvoicePayment[] : []
   const total = Number(invoice.total ?? 0)
-  const amountPaid = payments.reduce((sum, p) => sum + Math.round(p.amount * 100), 0) / 100
+  const amountPaid = payments.filter(p => !p.reversal).reduce((sum, p) => sum + Math.round(p.amount * 100), 0) / 100
   let status = normalizeInvoiceStatus(invoice.status)
   const balance = (status === InvoiceStatus.paid || status === InvoiceStatus.cancelled) ? 0 : Math.max(0, Math.round((total - amountPaid) * 100) / 100)
   if ((status === InvoiceStatus.sent || status === InvoiceStatus.overdue) && balance > 0) {
@@ -63,6 +63,7 @@ export function mapInvoice(row: unknown): Invoice {
   const snapshot = invoice.issued_snapshot as Invoice['issued_snapshot']
   return {
     payments,
+    time_links: Array.isArray(invoice.time_links) ? invoice.time_links : [],
     events: Array.isArray(invoice.events) ? invoice.events : [],
     amount_paid: amountPaid,
     balance_due: balance,
@@ -88,6 +89,6 @@ export function mapInvoice(row: unknown): Invoice {
     updated_at: String(invoice.updated_at ?? ''),
     client: snapshot?.client ? snapshot.client as Invoice['client'] : invoice.client as Invoice['client'],
     project: invoice.project as Invoice['project'],
-    line_items: Array.isArray(invoice.line_items) ? invoice.line_items.map(mapInvoiceLineItem) : undefined,
+    line_items: Array.isArray(invoice.line_items) ? invoice.line_items.map(mapInvoiceLineItem).sort((a,b) => a.order-b.order) : undefined,
   }
 }

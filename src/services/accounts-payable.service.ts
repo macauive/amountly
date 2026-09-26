@@ -11,6 +11,7 @@ import type {
   UpdatePurchaseOrderInput,
 } from '@/types/models'
 import { BillStatus, PurchaseOrderStatus } from '@/types/enums'
+import { recordError } from '@/services/review.service'
 
 type LegacyVendorBillRow = VendorBill & {
   date?: string
@@ -23,20 +24,6 @@ function mapVendorBill(row: LegacyVendorBillRow): VendorBill {
   }
 }
 
-function toLegacyCompatibleVendorInput(input: CreateVendorInput | UpdateVendorInput) {
-  const {
-    city: _city,
-    state: _state,
-    zip_code: _zipCode,
-    country: _country,
-    tax_id: _taxId,
-    payment_terms: _paymentTerms,
-    ...legacyCompatibleInput
-  } = input
-
-  return legacyCompatibleInput
-}
-
 // ─── Vendors ─────────────────────────────────────────────────
 
 export async function getVendors(): Promise<Vendor[]> {
@@ -44,6 +31,7 @@ export async function getVendors(): Promise<Vendor[]> {
   const { data, error } = await supabase
     .from('vendors')
     .select('*')
+    .is('archived_at',null)
     .order('name', { ascending: true })
 
   if (error) throw new Error(error.message)
@@ -52,10 +40,9 @@ export async function getVendors(): Promise<Vendor[]> {
 
 export async function createVendor(input: CreateVendorInput): Promise<Vendor> {
   const supabase = getSupabaseClient()
-  const legacyCompatibleInput = toLegacyCompatibleVendorInput(input)
   const { data, error } = await supabase
     .from('vendors')
-    .insert(legacyCompatibleInput)
+    .insert(input)
     .select()
     .single()
 
@@ -65,10 +52,9 @@ export async function createVendor(input: CreateVendorInput): Promise<Vendor> {
 
 export async function updateVendor(id: string, input: UpdateVendorInput): Promise<Vendor> {
   const supabase = getSupabaseClient()
-  const legacyCompatibleInput = toLegacyCompatibleVendorInput(input)
   const { data, error } = await supabase
     .from('vendors')
-    .update(legacyCompatibleInput)
+    .update(input)
     .eq('id', id)
     .select()
     .single()
@@ -77,9 +63,9 @@ export async function updateVendor(id: string, input: UpdateVendorInput): Promis
   return data as Vendor
 }
 
-export async function deleteVendor(id: string): Promise<void> {
+export async function archiveVendor(id: string): Promise<void> {
   const supabase = getSupabaseClient()
-  const { error } = await supabase.from('vendors').delete().eq('id', id)
+  const { error } = await supabase.from('vendors').update({archived_at:new Date().toISOString()}).eq('id', id).select('id').single()
   if (error) throw new Error(error.message)
 }
 
@@ -87,13 +73,15 @@ export async function deleteVendor(id: string): Promise<void> {
 
 export async function getVendorBills(): Promise<VendorBill[]> {
   const supabase = getSupabaseClient()
-  const { data, error } = await supabase
-    .from('vendor_bills')
-    .select('*, vendor:vendors(*), line_items:vendor_bill_line_items(*)')
-    .order('due_date', { ascending: true })
-
-  if (error) throw new Error(error.message)
-  return (data as LegacyVendorBillRow[]).map(mapVendorBill)
+  const rows: VendorBill[] = []
+  for (let offset = 0; ; offset += 200) {
+    const { data, error } = await supabase.from('vendor_bills')
+      .select('*, vendor:vendors(*), line_items:vendor_bill_line_items(*)')
+      .order('due_date').order('id').range(offset, offset + 199)
+    if (error) throw new Error('Could not load vendor bills.')
+    rows.push(...(data as LegacyVendorBillRow[] ?? []).map(mapVendorBill))
+    if (!data || data.length < 200) return rows
+  }
 }
 
 export async function createVendorBill(
@@ -101,53 +89,25 @@ export async function createVendorBill(
   lineItems: { description: string; quantity: number; rate: number; amount: number; order: number }[]
 ): Promise<VendorBill> {
   const supabase = getSupabaseClient()
-  const { issue_date, currency: _currency, ...legacyCompatibleInput } = input
-  const insertInput = {
-    ...legacyCompatibleInput,
-    date: issue_date,
-  }
-
-  const { data: bill, error: billError } = await supabase
-    .from('vendor_bills')
-    .insert(insertInput)
-    .select()
-    .single()
-
-  if (billError) throw new Error(billError.message)
-
-  if (lineItems.length > 0) {
-    const rows = lineItems.map((l) => ({ ...l, vendor_bill_id: bill.id }))
-    const { error: lineError } = await supabase.from('vendor_bill_line_items').insert(rows)
-    if (lineError) throw new Error(lineError.message)
-  }
-
-  return mapVendorBill(bill as LegacyVendorBillRow)
-}
-
-export async function updateVendorBill(id: string, input: UpdateVendorBillInput): Promise<VendorBill> {
-  const supabase = getSupabaseClient()
-  const { data, error } = await supabase
-    .from('vendor_bills')
-    .update(input)
-    .eq('id', id)
-    .select()
-    .single()
-
-  if (error) throw new Error(error.message)
-  return data as VendorBill
-}
-
-export async function deleteVendorBill(id: string): Promise<void> {
-  const supabase = getSupabaseClient()
-  const { error } = await supabase.from('vendor_bills').delete().eq('id', id)
-  if (error) throw new Error(error.message)
-}
-
-export async function markVendorBillPaid(id: string): Promise<VendorBill> {
-  return updateVendorBill(id, {
-    status: BillStatus.paid,
-    paid_at: new Date().toISOString(),
+  const { data: id, error } = await supabase.rpc('save_vendor_bill', {
+    p_id: crypto.randomUUID(),
+    p_data: { vendor_id:input.vendor_id,bill_number:input.bill_number,issue_date:input.issue_date,due_date:input.due_date,tax_rate:input.tax_rate,currency:input.currency,notes:input.notes ?? '' },
+    p_lines:lineItems.map(({description,quantity,rate})=>({description,quantity,rate})),
   })
+  if(error) throw recordError(error.code)
+  const {data,error:readError}=await supabase.from('vendor_bills').select('*').eq('id',id).single()
+  if(readError) throw new Error('Bill saved. Reload to view it.')
+  return mapVendorBill(data as LegacyVendorBillRow)
+}
+
+export async function cancelVendorBill(bill: VendorBill): Promise<void> {
+  const {error}=await getSupabaseClient().rpc('vendor_bill_action',{p_id:bill.id,p_action:'cancel',p_expected_updated_at:bill.updated_at})
+  if(error) throw recordError(error.code)
+}
+
+export async function markVendorBillPaid(bill: VendorBill, paidOn: string): Promise<void> {
+  const {error}=await getSupabaseClient().rpc('vendor_bill_action',{p_id:bill.id,p_action:'pay',p_expected_updated_at:bill.updated_at,p_paid_on:paidOn})
+  if(error) throw recordError(error.code)
 }
 
 export async function generateBillNumber(): Promise<string> {
@@ -182,7 +142,7 @@ export async function createPurchaseOrder(
 
   const { data: po, error: poError } = await supabase
     .from('purchase_orders')
-    .insert(legacyCompatibleInput)
+    .insert(input)
     .select()
     .single()
 
