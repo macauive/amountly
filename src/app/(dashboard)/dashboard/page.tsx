@@ -42,7 +42,7 @@ import {
 import { useRouter } from 'next/navigation'
 import { getQuickActions } from '@/lib/quick-actions'
 import { getDashboardAiInsights } from '@/lib/dashboard-ai'
-import { addDays, differenceInDays, endOfMonth, formatDistanceToNow, isAfter, isBefore, parseISO, startOfMonth } from 'date-fns'
+import { addDays, differenceInCalendarDays, endOfMonth, formatDistanceToNow, isAfter, isBefore, parseISO, startOfMonth } from 'date-fns'
 
 type DashboardStat = {
   title: string
@@ -313,7 +313,7 @@ function getPersonalMonthlySummary(bills: Bill[], expenses: Expense[]): MonthlyS
   const unpaidBills = bills.filter(
     bill => bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled
   )
-  const overdueBills = unpaidBills.filter(bill => differenceInDays(parseISO(bill.due_date), now) < 0)
+  const overdueBills = unpaidBills.filter(bill => differenceInCalendarDays(parseISO(bill.due_date), now) < 0)
   const expenseTotal = expensesThisMonth.reduce((sum, expense) => sum + expense.amount, 0)
   const paidBillTotal = paidBillsThisMonth.reduce((sum, bill) => sum + bill.amount, 0)
   const unpaidBillTotal = unpaidBills.reduce((sum, bill) => sum + bill.amount, 0)
@@ -380,7 +380,7 @@ function getPersonalNextSteps(bills: Bill[], expenses: Expense[]): AiNextStep[] 
   const unpaidBills = bills.filter(
     bill => bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled
   )
-  const overdueBills = unpaidBills.filter(bill => differenceInDays(parseISO(bill.due_date), now) < 0)
+  const overdueBills = unpaidBills.filter(bill => differenceInCalendarDays(parseISO(bill.due_date), now) < 0)
   const billsDueThisWeek = unpaidBills.filter((bill) => {
     const dueDate = parseISO(bill.due_date)
     return !isBefore(dueDate, now) && !isAfter(dueDate, addDays(now, 7))
@@ -515,7 +515,7 @@ function getPersonalFinancialSearchResults(query: string, bills: Bill[], expense
   const unpaidBills = bills.filter(
     bill => bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled
   )
-  const overdueBills = unpaidBills.filter(bill => differenceInDays(parseISO(bill.due_date), now) < 0)
+  const overdueBills = unpaidBills.filter(bill => differenceInCalendarDays(parseISO(bill.due_date), now) < 0)
   const billsDueSoon = unpaidBills.filter((bill) => {
     const dueDate = parseISO(bill.due_date)
     return !isBefore(dueDate, now) && !isAfter(dueDate, addDays(now, 7))
@@ -984,7 +984,7 @@ export default function DashboardPage() {
   const unpaidBills = personalBills.filter(
     bill => bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled
   )
-  const overdueBills = unpaidBills.filter(bill => differenceInDays(parseISO(bill.due_date), new Date()) < 0)
+  const overdueBills = unpaidBills.filter(bill => differenceInCalendarDays(parseISO(bill.due_date), new Date()) < 0)
   const billsDueThisWeek = unpaidBills.filter((bill) => {
     const dueDate = parseISO(bill.due_date)
     return !isBefore(dueDate, new Date()) && !isAfter(dueDate, addDays(new Date(), 7))

@@ -1,3 +1,4 @@
+import { effectiveBillStatus } from '@/lib/bill-status'
 import { runAiTask } from '@/lib/ai/client'
 import type { Bill, Expense, Invoice, TimeEntry, VendorBill } from '@/types/models'
 import type { AccountType } from '@/types/enums'
@@ -52,13 +53,13 @@ export async function getDashboardAiInsights(input: {
   }))
   return runAiTask<DashboardAiInsights>('dashboard_insights', {
     accountType: input.accountType, searchQuery: input.searchQuery, candidateHrefs: input.candidateHrefs,
-    bills: input.bills.map(row => ({ id: row.id, label: row.name, amount: row.amount, date: row.due_date, status: row.status })),
+    bills: input.bills.map(row => ({ id: row.id, label: row.name, amount: row.amount, date: row.due_date, status: effectiveBillStatus(row) })),
     expenses: expenses(input.expenses),
     workData: {
       invoices: input.workData.invoices.map(row => ({ id: row.id, label: row.invoice_number, amount: row.total, date: row.due_date, status: row.status })),
       expenses: expenses(input.workData.expenses),
       timeEntries: input.workData.timeEntries.map(row => ({ id: row.id, label: row.notes || 'Time entry', date: row.start_at, status: row.status })),
-      vendorBills: input.workData.vendorBills.map(row => ({ id: row.id, label: row.bill_number, amount: row.total, date: row.due_date, status: row.status })),
+      vendorBills: input.workData.vendorBills.map(row => ({ id: row.id, label: row.bill_number, amount: row.total, date: row.due_date, status: effectiveBillStatus(row) })),
     },
   })
 }

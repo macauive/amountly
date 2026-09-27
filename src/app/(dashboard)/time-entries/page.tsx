@@ -53,6 +53,7 @@ import { captureTimeEntryFromText } from '@/lib/time-ai'
 import { TimeBillingDialog, isTimeReserved } from '@/components/TimeBillingDialog'
 import { useCapability } from '@/hooks/useCapability'
 import { Capability } from '@/types/enums'
+import { weeklyTime } from '@/lib/weekly-time'
 
 function formatDuration(minutes: number | null | undefined): string {
   if (!minutes) return '-'
@@ -247,6 +248,7 @@ export default function TimeEntriesPage() {
   // Calculate total hours
   const totalMinutes = entries.reduce((sum, entry) => sum + (entry.duration_minutes || 0), 0)
   const totalHours = (totalMinutes / 60).toFixed(1)
+  const week = weeklyTime(entries, new Date(), user?.timezone)
 
   if (loading) {
     return (
@@ -310,7 +312,8 @@ export default function TimeEntriesPage() {
             <CardTitle className="text-sm font-medium">This Week</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">-</div>
+            <div className="text-2xl font-bold">{week.minutes === 0 ? '0h' : formatDuration(week.minutes)}</div>
+            <p className="text-xs text-muted-foreground">{formatDateOnly(week.start)} – {formatDateOnly(week.end)} · {week.timeZone} (Mon–Sun)</p>
           </CardContent>
         </Card>
       </div>

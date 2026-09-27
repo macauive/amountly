@@ -104,7 +104,8 @@ import {
   Wand2,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { format, parseISO, differenceInDays, addDays } from 'date-fns'
+import { format, parseISO, differenceInCalendarDays, addDays } from 'date-fns'
+import { billDaysUntilDue, effectiveBillStatus } from '@/lib/bill-status'
 import { captureInvoiceLineFromText } from '@/lib/invoice-ai'
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -227,7 +228,7 @@ function PersonalBillsView() {
   }
 
   const getDaysLabel = (dueDate: string) => {
-    const d = differenceInDays(parseISO(dueDate), new Date())
+    const d = differenceInCalendarDays(parseISO(dueDate), new Date())
     if (d < 0) return `${Math.abs(d)}d overdue`
     if (d === 0) return 'Due today'
     return `${d}d left`
@@ -235,9 +236,9 @@ function PersonalBillsView() {
 
   const unpaid = bills.filter(b => b.status !== BillStatus.paid && b.status !== BillStatus.cancelled)
   const paid = bills.filter(b => b.status === BillStatus.paid)
-  const overdue = unpaid.filter(b => b.status === BillStatus.overdue || differenceInDays(parseISO(b.due_date), new Date()) < 0)
+  const overdue = unpaid.filter(b => effectiveBillStatus(b) === BillStatus.overdue)
   const dueSoon = unpaid.filter((b) => {
-    const days = differenceInDays(parseISO(b.due_date), new Date())
+    const days = differenceInCalendarDays(parseISO(b.due_date), new Date())
     return days >= 0 && days <= 7
   })
   const recurring = bills.filter(b => b.recurrence !== BillRecurrence.once)
@@ -354,12 +355,12 @@ function PersonalBillsView() {
                         <div className="flex flex-col">
                           <span>{displayDate(bill.due_date)}</span>
                           {bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled && (
-                            <span className={`text-xs ${differenceInDays(parseISO(bill.due_date), new Date()) < 0 ? 'text-destructive' : 'text-muted-foreground'}`}>{getDaysLabel(bill.due_date)}</span>
+                            <span className={`text-xs ${differenceInCalendarDays(parseISO(bill.due_date), new Date()) < 0 ? 'text-destructive' : 'text-muted-foreground'}`}>{getDaysLabel(bill.due_date)}</span>
                           )}
                         </div>
                       </TableCell>
                       <TableCell className="text-right font-medium">{formatCurrency(bill.amount)}</TableCell>
-                      <TableCell><Badge variant={getBillStatusVariant(bill.status)}>{billStatusLabels[bill.status]}</Badge></TableCell>
+                      <TableCell><Badge variant={getBillStatusVariant(effectiveBillStatus(bill))}>{billStatusLabels[effectiveBillStatus(bill)]}</Badge></TableCell>
                       <TableCell><span className="text-sm text-muted-foreground">{billRecurrenceLabels[bill.recurrence]}</span></TableCell>
                       <TableCell className="text-right">
                         {bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled && (
@@ -642,10 +643,10 @@ function AccountsPayableView() {
   const unpaidBills = bills.filter(b => b.status !== BillStatus.paid && b.status !== BillStatus.cancelled)
   const overdueBills = bills.filter(b => {
     if (b.status === BillStatus.paid || b.status === BillStatus.cancelled) return false
-    return differenceInDays(parseISO(b.due_date), new Date()) < 0
+    return effectiveBillStatus(b) === BillStatus.overdue
   })
   const dueSoonBills = unpaidBills.filter((bill) => {
-    const days = differenceInDays(parseISO(bill.due_date), new Date())
+    const days = differenceInCalendarDays(parseISO(bill.due_date), new Date())
     return days >= 0 && days <= 7
   })
   const totalOutstanding = unpaidBills.reduce((s, b) => s + b.total, 0)
@@ -661,7 +662,7 @@ function AccountsPayableView() {
     ...dueSoonBills.slice(0, 2).map((bill) => ({
       id: `soon-${bill.id}`,
       title: `${bill.bill_number} is due soon`,
-      detail: `${bill.vendor?.name || 'Vendor bill'} is due in ${differenceInDays(parseISO(bill.due_date), new Date())} day${differenceInDays(parseISO(bill.due_date), new Date()) === 1 ? '' : 's'}.`,
+      detail: `${bill.vendor?.name || 'Vendor bill'} is due in ${differenceInCalendarDays(parseISO(bill.due_date), new Date())} day${differenceInCalendarDays(parseISO(bill.due_date), new Date()) === 1 ? '' : 's'}.`,
       amount: bill.total,
       badge: 'Due soon',
       tone: 'watch' as const,
@@ -750,8 +751,8 @@ function AccountsPayableView() {
                 <TableHeader><TableRow><TableHead>Bill #</TableHead><TableHead>Vendor</TableHead><TableHead>Issue Date</TableHead><TableHead>Due Date</TableHead><TableHead className="text-right">Total</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
                 <TableBody>
                   {bills.map(bill => {
-                    const daysLeft = differenceInDays(parseISO(bill.due_date), new Date())
-                    const isPastDue = daysLeft < 0 && bill.status !== BillStatus.paid
+                    const daysLeft = billDaysUntilDue(bill.due_date)
+                    const isPastDue = effectiveBillStatus(bill) === BillStatus.overdue
                     return (
                       <TableRow key={bill.id}>
                         <TableCell className="font-mono font-medium">{bill.bill_number}</TableCell>
@@ -764,7 +765,7 @@ function AccountsPayableView() {
                           </div>
                         </TableCell>
                         <TableCell className="text-right font-medium">{formatCurrency(bill.total)}</TableCell>
-                        <TableCell><Badge variant={getBillStatusVariant(bill.status)}>{billStatusLabels[bill.status]}</Badge></TableCell>
+                        <TableCell><Badge variant={getBillStatusVariant(effectiveBillStatus(bill))}>{billStatusLabels[effectiveBillStatus(bill)]}</Badge></TableCell>
                         <TableCell className="text-right">
                           {bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled && canManageBills && (
                             <Button variant="ghost" size="icon" title="Mark Paid" onClick={() => {setPaymentBill(bill);setPaidOn(format(new Date(),'yyyy-MM-dd'))}}><CheckCircle className="w-4 h-4 text-green-600" /></Button>
