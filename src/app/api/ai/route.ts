@@ -3,7 +3,7 @@ import { ExpenseCategory } from '@/types/enums'
 import { schemas, payloadSchemas, aiRequestSchema, parseResponseOutput } from '@/lib/ai/contracts'
 import { authorizeAiRequest, AiHttpError } from '@/lib/ai/server'
 import { readBoundedJson } from '@/lib/http'
-import { detectPromptInjection, redactPersonalData, restoreRedactedData } from '@/lib/ai/safety'
+import { contactEmailReferences, detectPromptInjection, redactPersonalData, restoreRedactedData } from '@/lib/ai/safety'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -13,7 +13,7 @@ const model = process.env.OPENAI_MODEL || 'gpt-6-luna'
 const moneyTextSchema = { type: 'string', pattern: '^(?:[0-9]{1,8}(?:\\.[0-9]{1,2})?)?$',
   description: 'Numeric amount only, with no currency symbol, code, commas, or whitespace. Empty string if missing.' }
 
-const jsonSchemas: Record<keyof typeof schemas, object> = {
+const jsonSchemas = {
   expense_capture: {
     type: 'object',
     additionalProperties: false,
@@ -186,7 +186,7 @@ function getPayloadText(payload: unknown) {
   return typeof payload === 'string' ? payload : JSON.stringify(payload)
 }
 
-async function callOpenAI(task: keyof typeof schemas, redactedPayload: string) {
+async function callOpenAI(task: keyof typeof schemas, redactedPayload: string, emailReferences?: ReturnType<typeof contactEmailReferences>) {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
     throw new AiHttpError(503, 'AI is temporarily unavailable')
@@ -226,7 +226,10 @@ async function callOpenAI(task: keyof typeof schemas, redactedPayload: string) {
           type: 'json_schema',
           name: task,
           strict: true,
-          schema: jsonSchemas[task],
+          schema: emailReferences ? { ...jsonSchemas.contact_capture, properties: {
+            ...jsonSchemas.contact_capture.properties,
+            email: { type: 'string', enum: emailReferences },
+          } } : jsonSchemas[task],
         },
       },
     }),
@@ -264,7 +267,12 @@ export async function POST(request: Request) {
     if (allowed !== true) throw new AiHttpError(429, 'AI usage limit reached. Please try again later.')
 
     const redaction = redactPersonalData(payloadText)
-    const rawResult = await callOpenAI(task, redaction.redacted)
+    const emailReferences = task === 'contact_capture' ? contactEmailReferences(redaction.replacements) : undefined
+    const rawResult = await callOpenAI(task, redaction.redacted, emailReferences)
+    if (emailReferences) {
+      const contact = schemas.contact_capture.parse(rawResult)
+      if (!emailReferences.includes(contact.email)) throw new AiHttpError(502, 'AI could not complete this request. Please try again.')
+    }
     const parsed = schemas[task].parse(restoreRedactedData(rawResult, redaction.replacements))
     return NextResponse.json({ result: parsed, safety: { redacted: Object.keys(redaction.replacements).length > 0 } }, { headers })
   } catch (error) {

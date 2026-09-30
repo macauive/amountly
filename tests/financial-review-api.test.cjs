@@ -16,6 +16,22 @@ test('production never enables synthetic bypass; default disabled; account auth 
  const account=loadApp({},{NODE_ENV:'development',AMOUNTLY_REVIEW_MODE:'account'})('src/app/api/financial-review/route.ts')
  assert.equal((await account.POST(request())).status,401)
 })
+test('disabled agent returns 404 and invalid requests preserve client statuses without starting OpenAI',async()=>{
+ const path='src/app/api/financial-review/agent/route.ts'
+ const overrides={openai:class {constructor(){throw new Error('Provider must not be started')}}}
+ for(const settings of [{NODE_ENV:'production'},{...env,NODE_ENV:'production',AMOUNTLY_SYNTHETIC_AGENT:'enabled'},
+  {NODE_ENV:'production',AMOUNTLY_REVIEW_MODE:'account'},env]) {
+  const response=await loadApp(overrides,settings)(path).POST(request())
+  assert.equal(response.status,404)
+  assert.equal((await response.json()).error,'Agent preview is not enabled.')
+  assert.match(response.headers.get('cache-control'),/no-store/)
+ }
+ const enabled={...env,AMOUNTLY_SYNTHETIC_AGENT:'enabled',OPENAI_API_KEY:'synthetic-local-test-key'}
+ const {POST}=loadApp(overrides,enabled)(path)
+ assert.equal((await POST(request(period,{origin:'https://evil.invalid'}))).status,403)
+ assert.equal((await POST(request({...period,extra:'x'.repeat(5000)}))).status,413)
+ assert.equal((await POST(new Request('http://localhost:4180/api/financial-review/agent',{method:'POST',body:'{'}))).status,400)
+})
 test('MCP discovery, read tools, source record and UI resource work over actual SDK transport',async()=>{
  const {POST}=loadApp({},env)('src/app/api/mcp/route.ts')
  const rpc=async(method,params)=>{

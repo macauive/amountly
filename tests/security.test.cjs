@@ -173,6 +173,7 @@ test('contact capture keeps personal data redacted at the provider and restores 
       const providerText = input.input[0].content[0].text
       assert.ok(providerText.includes('[REDACTED_EMAIL_0]'))
       assert.ok(!providerText.includes('demo@example.com'))
+      assert.deepEqual(input.text.format.schema.properties.email.enum, ['[REDACTED_EMAIL_0]'])
       assert.match(input.instructions, /placeholder exactly into its corresponding field/)
     },
     response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] },
@@ -182,6 +183,33 @@ test('contact capture keeps personal data redacted at the provider and restores 
   const body = await response.json()
   assert.equal(body.result.email, 'demo@example.com')
   assert.equal(body.safety.redacted, true)
+})
+
+test('contact capture rejects altered references, invented addresses and dropped unambiguous emails', async () => {
+  for (const email of ['<redacted>', '[REDACTED_EMAIL_99]', 'invented@example.com', '']) {
+    const result = { name: 'Demo', contact_name: '', email, phone: '', address: '', city: '', state: '', zip_code: '', notes: '', reason: '' }
+    const h = harness({ response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] } })
+    const response = await h.load('src/app/api/ai/route.ts').POST(request({ task: 'contact_capture', payload: 'Demo demo@example.com' }))
+    assert.equal(response.status, 502)
+    assert.ok(!(await response.text()).includes(email || 'demo@example.com'))
+  }
+})
+
+test('contact references preserve ambiguity and restore only a selected source value', async () => {
+  for (const [email, expected] of [['[REDACTED_EMAIL_1]', 'second@example.com'], ['', '']]) {
+    const result = { name: 'Demo', contact_name: '', email, phone: '', address: '', city: '', state: '', zip_code: '', notes: '', reason: '' }
+    const h = harness({
+      inspectProviderInput: input => assert.deepEqual(input.text.format.schema.properties.email.enum, ['', '[REDACTED_EMAIL_0]', '[REDACTED_EMAIL_1]']),
+      response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] },
+    })
+    const response = await h.load('src/app/api/ai/route.ts').POST(request({ task: 'contact_capture', payload: 'Demo first@example.com or second@example.com' }))
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).result.email, expected)
+  }
+  const safety = harness().load('src/lib/ai/safety.ts')
+  const repeated = safety.redactPersonalData('Demo demo@example.com; repeat demo@example.com')
+  assert.equal(safety.contactEmailReferences(repeated.replacements).includes(''), false)
+  assert.deepEqual(Array.from(safety.contactEmailReferences({})), [''])
 })
 
 test('provider failures, refusals and incomplete responses do not leak details', async () => {

@@ -47,6 +47,15 @@ export function redactPersonalData(value: string): RedactionResult {
   return { redacted, replacements }
 }
 
+// Email fields select server-owned references, never model-generated addresses.
+// One distinct source value is unambiguous; multiple values may be left blank.
+export function contactEmailReferences(replacements: Record<string, string>): [string, ...string[]] {
+  const entries = Object.entries(replacements).filter(([token]) => /^\[REDACTED_EMAIL_\d+\]$/.test(token))
+  const tokens = entries.map(([token]) => token)
+  if (new Set(entries.map(([, value]) => value)).size !== 1) tokens.unshift('')
+  return tokens as [string, ...string[]]
+}
+
 export function restoreRedactedData<T>(value: T, replacements: Record<string, string>): T {
   if (typeof value === 'string') {
     const restored = Object.entries(replacements).reduce<string>(

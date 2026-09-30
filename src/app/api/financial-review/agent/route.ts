@@ -2,8 +2,9 @@ import OpenAI from 'openai'
 import { reviewMode } from '@/lib/financial-review/access'
 import { syntheticSnapshot, demoDay } from '@/lib/financial-review/fixtures'
 import { calculateReview } from '@/lib/financial-review/calculate'
-import { periodSchema } from '@/lib/financial-review/contracts'
+import { periodSchema, ReviewError } from '@/lib/financial-review/contracts'
 import { readBoundedJson } from '@/lib/http'
+import { AiHttpError } from '@/lib/ai/server'
 import { runSyntheticReviewAgent } from '@/lib/financial-review/agent'
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -24,5 +25,11 @@ export async function POST(request: Request) {
       const result = await runSyntheticReviewAgent(review, client, process.env.OPENAI_REVIEW_MODEL || process.env.OPENAI_MODEL || 'gpt-6-luna')
       return Response.json({ ...result, synthetic: true }, { headers })
     } finally { running = false }
-  } catch { return Response.json({ error: 'The agent could not complete this review. Your deterministic findings are still available.' }, { status: 502, headers }) }
+  } catch (error) {
+    if (error instanceof ReviewError && error.status === 404) return Response.json({ error: 'Agent preview is not enabled.' }, { status: 404, headers })
+    if ((error instanceof ReviewError || error instanceof AiHttpError) && [400, 403, 413].includes(error.status)) {
+      return Response.json({ error: 'Invalid agent review request.' }, { status: error.status, headers })
+    }
+    return Response.json({ error: 'The agent could not complete this review. Your deterministic findings are still available.' }, { status: 502, headers })
+  }
 }
