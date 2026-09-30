@@ -8,7 +8,10 @@ import { detectPromptInjection, redactPersonalData, restoreRedactedData } from '
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-const model = process.env.OPENAI_MODEL || 'gpt-5.2'
+const model = process.env.OPENAI_MODEL || 'gpt-6-luna'
+// Match the application money contract before generation, not only after it.
+const moneyTextSchema = { type: 'string', pattern: '^(?:[0-9]{1,8}(?:\\.[0-9]{1,2})?)?$',
+  description: 'Numeric amount only, with no currency symbol, code, commas, or whitespace. Empty string if missing.' }
 
 const jsonSchemas: Record<keyof typeof schemas, object> = {
   expense_capture: {
@@ -16,7 +19,7 @@ const jsonSchemas: Record<keyof typeof schemas, object> = {
     additionalProperties: false,
     required: ['amount', 'merchant', 'description', 'expense_date', 'category', 'confidence', 'reason'],
     properties: {
-      amount: { type: 'string' },
+      amount: moneyTextSchema,
       merchant: { type: 'string' },
       description: { type: 'string' },
       expense_date: { type: 'string' },
@@ -30,7 +33,7 @@ const jsonSchemas: Record<keyof typeof schemas, object> = {
     additionalProperties: false,
     required: ['amount', 'merchant', 'description', 'expense_date', 'category', 'confidence', 'reason', 'notes', 'summary'],
     properties: {
-      amount: { type: 'string' },
+      amount: moneyTextSchema,
       merchant: { type: 'string' },
       description: { type: 'string' },
       expense_date: { type: 'string' },
@@ -174,7 +177,7 @@ const taskInstructions: Record<keyof typeof schemas, string> = {
   invoice_line: 'Turn the user note into one invoice or bill line. Infer quantity, rate, and amount when explicitly stated. Use 1 and 0 when missing.',
   invoice_reminder: 'Draft a concise payment reminder from invoice metadata. Be polite, factual, and do not invent payment links or legal threats.',
   time_entry: 'Extract a time entry from the user note. Use YYYY-MM-DD and HH:mm. If no time is present, infer a reasonable block and explain it.',
-  contact_capture: 'Extract client/contact fields from pasted text. Return empty strings for missing fields.',
+  contact_capture: 'Extract client/contact fields from pasted text. Copy any [REDACTED_EMAIL_N], [REDACTED_PHONE_N], or [REDACTED_ADDRESS_N] placeholder exactly into its corresponding field; the server restores the original value. Never guess a redacted value. Return empty strings for missing fields.',
   time_invoice_draft: 'Draft invoice line items from unbilled time entries. Use only provided entries, rates, and client IDs. Limit to 8 lines.',
   dashboard_insights: 'Generate dashboard next steps, a monthly summary, and optional search results from the provided financial records. Do not invent records. Use only href values that already appear in the provided candidate data.',
 }

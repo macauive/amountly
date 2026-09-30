@@ -50,6 +50,7 @@ function harness(options = {}) {
       fetch: async (_url, init) => {
         calls.provider++
         const input = JSON.parse(init.body)
+        options.inspectProviderInput?.(input)
         assert.equal(input.store, false)
         assert.equal(input.max_output_tokens, 4000)
         assert.ok(init.signal)
@@ -142,6 +143,45 @@ test('AI parses raw HTTP output after verified identity and quota', async () => 
   assert.equal(response.status, 200)
   assert.equal((await response.json()).result.amount, 5)
   assert.equal(h.calls.auth, 1); assert.equal(h.calls.quota, 1); assert.equal(h.calls.provider, 1)
+})
+
+test('capture schemas constrain monetary strings and still reject malformed provider amounts', async () => {
+  for (const task of ['expense_capture', 'receipt_capture']) {
+    for (const amount of ['42.50', '', '42.50 USD', '$42.50', '-42.50']) {
+      const expected = ['42.50', ''].includes(amount) ? 200 : 502
+      const result = { amount, merchant: 'Demo', description: 'Paper', expense_date: '2026-09-28',
+        category: 'OFFICE_SUPPLIES', confidence: 'high', reason: 'Synthetic fixture',
+        ...(task === 'receipt_capture' ? { notes: '', summary: 'Paper' } : {}) }
+      const h = harness({
+        inspectProviderInput: input => {
+          const pattern = new RegExp(input.text.format.schema.properties.amount.pattern)
+          assert.equal(pattern.test(amount), expected === 200)
+          assert.equal(input.text.format.strict, true)
+        },
+        response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] },
+      })
+      assert.equal((await h.load('src/app/api/ai/route.ts').POST(request({ task, payload: 'Demo paper for 42.50 USD' }))).status, expected)
+    }
+  }
+})
+
+test('contact capture keeps personal data redacted at the provider and restores returned placeholders', async () => {
+  const result = { name: 'Demo', contact_name: '', email: '[REDACTED_EMAIL_0]', phone: '', address: '',
+    city: '', state: '', zip_code: '', notes: '', reason: '' }
+  const h = harness({
+    inspectProviderInput: input => {
+      const providerText = input.input[0].content[0].text
+      assert.ok(providerText.includes('[REDACTED_EMAIL_0]'))
+      assert.ok(!providerText.includes('demo@example.com'))
+      assert.match(input.instructions, /placeholder exactly into its corresponding field/)
+    },
+    response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] },
+  })
+  const response = await h.load('src/app/api/ai/route.ts').POST(request({ task: 'contact_capture', payload: 'Demo demo@example.com' }))
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.equal(body.result.email, 'demo@example.com')
+  assert.equal(body.safety.redacted, true)
 })
 
 test('provider failures, refusals and incomplete responses do not leak details', async () => {

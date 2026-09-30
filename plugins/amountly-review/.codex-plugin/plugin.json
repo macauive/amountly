@@ -1,0 +1,19 @@
+{
+  "name": "amountly-review",
+  "version": "0.1.0",
+  "description": "Read-only Amountly financial review with an interactive panel and synthetic local preview.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Amountly Review",
+    "shortDescription": "Review invoices, bills, and expenses.",
+    "longDescription": "Read unpaid invoices, upcoming obligations, and source-linked financial findings. Local synthetic development package.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Show my weekly financial review."
+  },
+  "mcpServers": "./.mcp.json"
+}
