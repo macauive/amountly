@@ -1,7 +1,6 @@
 // Integration checks against ONLY the Supabase CLI's local Amountly stack.
 // Synthetic accounts/records are retained locally for inspection. Never loads .env.
 const assert = require('node:assert/strict')
-const { execFileSync } = require('node:child_process')
 const { randomUUID, randomBytes, createHmac } = require('node:crypto')
 const { createClient } = require('@supabase/supabase-js')
 const loadApp = require('./load-app.cjs')
@@ -15,8 +14,7 @@ async function cookieHeader(actor) {
   await ok(client.auth.setSession(session),'prepare server cookie session')
   return [...jar].map(([name,value])=>`${name}=${value}`).join('; ')
 }
-const s = JSON.parse(execFileSync('supabase', ['status','-o','json'], { encoding: 'utf8', stdio: ['ignore','pipe','ignore'] }))
-if (s.API_URL !== 'http://127.0.0.1:54321') throw Error('Refusing non-local Supabase')
+const s = require('./local-supabase.cjs')()
 const options = { auth: { persistSession: false, autoRefreshToken: false } }
 const admin = createClient(s.API_URL, s.SERVICE_ROLE_KEY, options)
 const clients = []

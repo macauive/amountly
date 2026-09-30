@@ -50,11 +50,31 @@ export async function loadReviewSnapshot(client: SupabaseClient, actorInput: Act
     query = actor.account_type === 'business' ? query.eq('organization_id', actor.organization_id) : query.eq('user_id', actor.id).is('organization_id', null)
     bills = (await pages(offset => query.order('id').range(offset, offset + 199))).map(b => ({ ...b, name: b.bill_number, amount: b.total, kind: 'vendor_bills' }))
   }
-  let expenseQuery = client.from('expenses').select('id,user_id,organization_id,description,amount,currency,expense_date,category,status,receipt_path,receipt_url,archived_at')
-    .eq('currency', period.currency).is('archived_at', null).neq('status', 'REJECTED').gte('expense_date', addDays(period.start, -90)).lt('expense_date', addDays(period.end, 1))
-  expenseQuery = actor.account_type === 'business' ? expenseQuery.eq('organization_id', actor.organization_id) : expenseQuery.eq('user_id', actor.id).is('organization_id', null)
-  if (!can(Capability.viewTeamExpenses)) expenseQuery = expenseQuery.eq('user_id', actor.id)
-  const expenses = can(Capability.viewOwnExpenses) ? await pages(offset => expenseQuery.order('id').range(offset, offset + 199)) : []
+  // Expenses have a user_id, not an organization_id. Resolve the permitted
+  // owners through RLS-protected profiles before reading bounded owner batches.
+  let expenseOwners = [actor.id]
+  if (actor.account_type === 'business' && can(Capability.viewTeamExpenses)) {
+    const profiles = await pages(offset => client.from('users').select('id,organization_id')
+      .eq('organization_id', actor.organization_id).order('id').range(offset, offset + 199))
+    expenseOwners = profiles.map(input => {
+      const profile = z.object({ id: z.string().uuid(), organization_id: z.string().uuid() }).parse(input)
+      if (profile.organization_id !== actor.organization_id) throw new ReviewError(403)
+      return profile.id
+    })
+  }
+  const expenses: Record<string, unknown>[] = []
+  if (can(Capability.viewOwnExpenses)) for (let offset = 0; offset < expenseOwners.length; offset += 100) {
+    const owners = expenseOwners.slice(offset, offset + 100)
+    const batch = await pages(page => client.from('expenses')
+      .select('id,user_id,description,amount,currency,expense_date,category,status,receipt_path,receipt_url,archived_at')
+      .in('user_id', owners).eq('currency', period.currency).is('archived_at', null).neq('status', 'REJECTED')
+      .gte('expense_date', addDays(period.start, -90)).lt('expense_date', addDays(period.end, 1)).order('id').range(page, page + 199))
+    for (const row of batch) {
+      if (typeof row.user_id !== 'string' || !owners.includes(row.user_id)) throw new ReviewError(403)
+      expenses.push({ ...row, organization_id: actor.account_type === 'business' ? actor.organization_id : null })
+    }
+    if (expenses.length > 2000) throw new ReviewError(413)
+  }
   const snapshot = snapshotSchema.parse({ invoices, payments, bills, expenses })
   // Defense in depth if a query or future RLS policy accidentally broadens.
   for (const row of [...snapshot.invoices, ...snapshot.bills, ...snapshot.expenses]) {
@@ -97,19 +117,27 @@ export async function readSourceRecord(client: SupabaseClient, input: unknown) {
     invoices: 'id,user_id,organization_id,invoice_number,total,currency,issue_date,due_date,status',
     bills: 'id,user_id,name,amount,currency,due_date,status',
     vendor_bills: 'id,user_id,organization_id,bill_number,total,currency,due_date,status',
-    expenses: 'id,user_id,organization_id,description,amount,currency,expense_date,category,status,receipt_path,receipt_url,archived_at',
+    expenses: 'id,user_id,description,amount,currency,expense_date,category,status,receipt_path,receipt_url,archived_at',
   }
   let read = client.from(query.kind).select(columns[query.kind]).eq('id', query.id)
-  if (query.kind === 'bills') read = read.eq('user_id', actor.id)
-  else if (actor.account_type === 'business') read = read.eq('organization_id', actor.organization_id)
-  else read = read.eq('user_id', actor.id).is('organization_id', null)
   if (query.kind === 'expenses') {
     read = read.is('archived_at', null)
     if (!can(Capability.viewTeamExpenses)) read = read.eq('user_id', actor.id)
-  }
+  } else if (query.kind === 'bills') read = read.eq('user_id', actor.id)
+  else if (actor.account_type === 'business') read = read.eq('organization_id', actor.organization_id)
+  else read = read.eq('user_id', actor.id).is('organization_id', null)
   const result = await read.single()
   if (result.error || !result.data) throw new ReviewError(404, 'This record is unavailable or outside your access.')
   const raw = z.record(z.unknown()).parse(result.data)
+  if (query.kind === 'expenses') {
+    const ownerId = z.string().uuid().parse(raw.user_id)
+    if (ownerId !== actor.id) {
+      if (actor.account_type !== 'business' || !can(Capability.viewTeamExpenses)) throw new ReviewError(403)
+      const profile = await client.from('users').select('id,organization_id').eq('id', ownerId).eq('organization_id', actor.organization_id).single()
+      if (profile.error || profile.data?.id !== ownerId || profile.data?.organization_id !== actor.organization_id) throw new ReviewError(403)
+    }
+    raw.organization_id = actor.account_type === 'business' ? actor.organization_id : null
+  }
   if (raw.id !== query.id || (actor.account_type === 'business' ? raw.organization_id !== actor.organization_id
     : raw.user_id !== actor.id || (query.kind !== 'bills' && raw.organization_id !== null))) throw new ReviewError(403)
   if (query.kind === 'expenses' && !can(Capability.viewTeamExpenses) && raw.user_id !== actor.id) throw new ReviewError(403)

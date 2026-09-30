@@ -20,7 +20,8 @@
     "test:workspace-export": "node --test tests/workspace-export.test.cjs",
     "test:auth": "node --test tests/auth.test.cjs",
     "test:capture": "node --test tests/capture.test.cjs",
-    "test:financial-review": "node --test tests/financial-review.test.cjs tests/financial-review-api.test.cjs"
+    "test:financial-review": "node --test tests/financial-review.test.cjs tests/financial-review-api.test.cjs",
+    "test:financial-review:local": "node tests/financial-review-local.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

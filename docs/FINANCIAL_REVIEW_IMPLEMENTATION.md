@@ -12,7 +12,7 @@ The scoped read service, deterministic calculations, synthetic fixtures, bounded
 
 `src/lib/financial-review` contains shared schemas, scoped database reads, deterministic calculations, and agent coordination. The in-app review calls the HTTP service directly; future iOS clients can call the bearer-authenticated HTTP API. Existing receipt extraction, invoice-reminder drafting, and dashboard Responses code are unchanged.
 
-Every account request verifies the Supabase user and active profile, uses that user's non-privileged client and RLS, gates resource types by capabilities, adds explicit ownership filters, and rechecks returned ownership. Inputs accept dates and currency, never an owner/organization identifier or SQL. Reads select only needed columns, paginate, and fail closed at 2,000 rows per resource or 512 KB of review output. Source labels are bounded to 160 characters. No partial totals on read/validation/limit failure. Nested payment reversals follow the existing invoice calculation. Descriptions remain untrusted text. Receipt paths/URLs stay server-side; only presence affects findings.
+Every account request verifies the Supabase user and active profile, uses that user's non-privileged client and RLS, gates resource types by capabilities, adds explicit ownership filters, and rechecks returned ownership. Expenses belong to users rather than directly to organizations: team review resolves bounded owner IDs from scoped profiles and reads expenses in batches of 100 owners, while supporting records recheck the owner's profile. Inputs accept dates and currency, never an owner/organization identifier or SQL. Reads select only needed columns, paginate, and fail closed at 2,000 rows per resource or 512 KB of review output. Source labels are bounded to 160 characters. No partial totals on read/validation/limit failure. Nested payment reversals follow the existing invoice calculation. Descriptions remain untrusted text. Receipt paths/URLs stay server-side; only presence affects findings.
 
 Date semantics: invoice balances/bill states are current. Overdue means due date before the as-of day (UTC for account mode). Obligations include past due and the next seven days inclusive. Selected period (maximum 31 inclusive days) controls expenses. Expenses include non-archived, non-rejected records; this is a review, not an accounting statement. Currency is never combined. Unusual means at least three prior category observations in 90 days, amount at least three times their median and at least 100 currency units. Missing references and unusual amounts are review flags, not judgments of legitimacy.
 
@@ -95,4 +95,28 @@ Removed the MCP SDK and its unused dependency tree (87 packages), server route, 
 
 All 74 remaining automated tests, lint, and the production build passed. The in-app browser reloaded the synthetic React review, returned the expected totals ($1,800 outstanding, $965 obligations, $420 expenses), and displayed a supporting invoice. No browser errors or warnings were recorded. The dependency audit reported no vulnerabilities.
 
-The next useful release test is the account-mode review against an isolated live Supabase Auth/PostgREST stack: owner/member/outsider access, expired sessions, supporting-record ownership, and reconciliation against seeded balances. That local stack was unavailable during this check (its database container did not exist). Existing mocked authorization tests pass, but they do not replace this integration test. Customer-data review and agent gates remain disabled in production.
+At this point the remaining release test was account-mode review against an isolated live Supabase Auth/PostgREST stack. It has since been completed as recorded below. Customer-data review and agent gates remain disabled in production.
+
+### Live local database verification
+
+The existing `amountly-web` database had schema objects missing from its recorded migration history. One pending migration applied, then the next stopped because its table already existed. Its data was preserved. A separate `amountly-review-qa` stack was created from the checked-in migrations on loopback API port 55321, database port 55322, and Studio port 55323. All migrations applied successfully to that clean database. The production-mode test app runs on port 4174 with local public configuration, account review enabled locally, and an empty OpenAI key. No hosted database or customer records were used.
+
+The live tests exposed an invalid assumption that `expenses` had an `organization_id` column. The read service now uses the actual user ownership model, scoped profile reads, bounded owner batches, and explicit returned-owner checks. Regression fixtures now reflect the actual expense table shape and cover foreign profile/expense rejection.
+
+Verified after the fix:
+
+- `npm run test:financial-review:local`: passed through real Next.js HTTP routes, Supabase Auth, and PostgREST. Covers partial and reversed invoice payments; excluded draft/paid/cancelled invoices; current obligations; date/currency filters; archived/rejected expenses; missing receipts and unusual-expense findings; owner/member/outsider/personal/freelancer access; supporting-record ownership/redaction; direct RLS checks; anonymous/expired/disabled sessions; live role changes; cross-origin/forged ownership rejection; 206-record pagination; and the disabled account-mode agent.
+- `npm run test:release:local`: passed all existing release checks, including actual receipt upload/signing/expiry, PDF and CSV routes, 1,005-row pagination, financial workflows, concurrent updates, retry identities, corrections, and tenant isolation.
+- `node --test tests/*.test.cjs`: 75 passed. `npm run lint` and the local production build passed.
+
+Both local integration commands support `AMOUNTLY_TEST_SUPABASE_WORKDIR` to select the isolated stack. The helper accepts only the fixed loopback API endpoints on ports 54321 or 55321, reads local CLI credentials into memory, and never loads `.env` files. Synthetic test fixtures are retained locally. The current QA workdir path is recorded locally in `/tmp/amountly-review-qa-workdir`; it is not a secret.
+
+To rerun against the running QA stack:
+
+```sh
+export AMOUNTLY_TEST_SUPABASE_WORKDIR="$(cat /tmp/amountly-review-qa-workdir)"
+npm run test:financial-review:local
+npm run test:release:local
+```
+
+To rebuild/restart the local app, use `AMOUNTLY_REVIEW_MODE=account node tests/local-app.cjs build`, followed by the same command with `start`, with the workdir variable set. The workdir configuration/migrations are local test setup; production environment flags remain unchanged.
