@@ -7,7 +7,7 @@ export const reviewEventSchema = z.object({ id: z.string().uuid(), accountId: z.
   version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict()
 export type FollowThroughState = { accountId: string; enabled: boolean; seen: string[]; versions: Record<string, number>;
   drafts: { id: string; sourceId: string; title: string; body: string; status: 'needs_review' }[] }
-// Application-event reducer, not MCP Events. The caller authenticates the event,
+// Application-event reducer. The caller authenticates the event,
 // reloads authorized records, and commits this state atomically with its cursor.
 export function prepareFollowThrough(state: FollowThroughState, eventInput: unknown, review: FinancialReview): FollowThroughState {
   const event = reviewEventSchema.parse(eventInput)

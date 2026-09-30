@@ -2,17 +2,15 @@
 
 Local development, 2026-09-29. No deployment, production migration, or customer-data agent execution is authorized by this work. The user subsequently authorized saving the API-key permission fix and continuing synthetic tests.
 
-## Plan and progress
+## Current scope
 
-1. Inspect auth, RLS, account capabilities, invoice payments/reversals, bills, current bounded Responses flows, and existing work — complete.
-2. Build shared account-scoped read service, deterministic calculations, MCP tools, synthetic fixtures, interactive panel — implemented and locally verified.
-3. Build bounded Agents API integration using synthetic records only — implemented and contract-tested. Live session creation rejected with HTTP 403 (`forbidden`); no successful live agent execution is claimed.
-4. Add opt-in application-event reduction and replay tests — implemented with a local persistent journal and replay demonstration; production ingestion and MCP Events remain separate follow-up work.
-5. Run auth/isolation, boundary, calculation, failure, replay, repository checks, and in-app browser verification — complete within the limits below.
+The user chose an in-app-only experience. The MCP server, SDK dependency, plugin package, HTML panel, and bridge preview were removed. The React review page and its direct HTTP endpoints remain; neither Smart Capture nor the synthetic review agent depends on MCP. Existing production review gates remain disabled.
+
+The scoped read service, deterministic calculations, synthetic fixtures, bounded Agents API integration, and local application-event journal remain implemented. Live synthetic agent calls succeeded after the permission fix described in the historical verification below. Production event ingestion and customer-data agent execution remain outside this implementation.
 
 ## Architecture and boundaries
 
-`src/lib/financial-review` contains shared schemas, scoped database reads, deterministic calculations, MCP tools, and agent coordination. Web and MCP call the same service; future iOS clients can call the bearer-authenticated HTTP API. Existing receipt extraction, invoice-reminder drafting, and dashboard Responses code are unchanged.
+`src/lib/financial-review` contains shared schemas, scoped database reads, deterministic calculations, and agent coordination. The in-app review calls the HTTP service directly; future iOS clients can call the bearer-authenticated HTTP API. Existing receipt extraction, invoice-reminder drafting, and dashboard Responses code are unchanged.
 
 Every account request verifies the Supabase user and active profile, uses that user's non-privileged client and RLS, gates resource types by capabilities, adds explicit ownership filters, and rechecks returned ownership. Inputs accept dates and currency, never an owner/organization identifier or SQL. Reads select only needed columns, paginate, and fail closed at 2,000 rows per resource or 512 KB of review output. Source labels are bounded to 160 characters. No partial totals on read/validation/limit failure. Nested payment reversals follow the existing invoice calculation. Descriptions remain untrusted text. Receipt paths/URLs stay server-side; only presence affects findings.
 
@@ -22,8 +20,7 @@ Date semantics: invoice balances/bill states are current. Overdue means due date
 
 - `npm ci`
 - `AMOUNTLY_REVIEW_MODE=synthetic npm run dev -- --hostname localhost --port 4180`
-- Open `http://localhost:4180/review-preview`. The actual MCP HTML panel can also be exercised at `http://localhost:4180/api/financial-review/panel-preview` in a sandboxed local bridge harness. The synthetic fixture clock is 2026-09-29.
-- The MCP endpoint is `http://localhost:4180/api/mcp`; local package: `plugins/amountly-review`. The package points only to this synthetic local endpoint. No API key is needed for basic plugin tools.
+- Open `http://localhost:4180/review-preview` for the in-app synthetic review. The synthetic fixture clock is 2026-09-29.
 - For a bounded synthetic agent preview, retain `OPENAI_API_KEY` in the ignored local `.env.local` and start with `AMOUNTLY_SYNTHETIC_AGENT=enabled`. Optional `OPENAI_REVIEW_MODEL` overrides the existing `OPENAI_MODEL`; both the review-agent fallback and existing AI capture/drafting fallback are `gpt-6-luna`.
 - The SDK is pinned to `openai@7.25.0`; the documented minimum for Agents API TypeScript is 7.15.0. SDK installation alone does not prove account access. Required project permissions are `api.agents.read`, `api.agents.write`, and `api.responses.write`. Live testing additionally required List models Read (`api.model.read` / `model.read`) for the service's model lookup. These narrow key settings were saved during troubleshooting; the application itself does not modify permissions.
 - Synthetic mode is rejected outside development or off the loopback hostname. Default mode is disabled. `AMOUNTLY_REVIEW_MODE=account` enables the existing Supabase bearer-authenticated read service, but must not be used with customer data during initial development. The agent route refuses account mode regardless of API key.
@@ -39,24 +36,14 @@ Sources:
 - https://developers.openai.com/api/docs/guides/agents-api/architecture
 - https://developers.openai.com/api/docs/guides/agents-api/quickstart
 - https://developers.openai.com/api/docs/guides/agents-api/tools/functions
-- https://developers.openai.com/plugins/build/extensions
-- https://developers.openai.com/plugins/build/chatgpt-ui
-- https://developers.openai.com/plugins/build/auth
-- https://developers.openai.com/plugins/build/mcp-events
 
-## Plugin installation boundary
-
-The local SDK transport and tools can be tested directly with an MCP client. ChatGPT installation requires developer-mode MCP registration and an appropriate reachable development endpoint. Private account-data use additionally requires a reviewed OAuth 2.1 resource-server integration with discovery, audience/resource validation and restricted scopes; the app's ordinary Supabase bearer token is not presented as a complete ChatGPT OAuth integration. This change neither publishes nor registers a remote plugin. The local package deliberately has no registered remote plugin ID or fabricated OAuth issuer.
-
-MCP Apps uses `text/html;profile=mcp-app`, the UI bridge, and global/thread entrypoint metadata. Host integration remains unverified until an actual ChatGPT connection is authorized. UI uses text nodes and no external resources. The only plugin tools read data.
-
-## Application events versus MCP Events
+## Local application events
 
 `prepareFollowThrough` is an application-event reducer: explicit account opt-in, tenant checks, per-record monotonic versions, event-ID deduplication, bounded history, and review-only drafts. It does not accept text instructions or callback URLs. The caller must authenticate events, reload scoped data and atomically persist the returned state/cursor. The local-only `event-journal.ts` provides a per-account exclusive lock, restrictive filesystem permissions and atomic state replacement. Replay state survives process reloads. Run `node scripts/review-event-demo.cjs --enable` to explicitly opt the synthetic account in and process/replay a sample invoice event; omitting `--enable` disables it. The command prints the local journal path, and a repeated event produces exactly one review flag. This is not a production event source or worker. A crashed process can leave a lock requiring inspection; power-loss durability, automatic recovery, multi-host coordination and database delivery are not claimed.
 
-MCP Events is a distinct subscription/delivery protocol. Current ChatGPT docs require MCP 2.0 (`2026-07-28`), durable subscriptions, verified callback URLs, signing secrets, signed webhook delivery, replay protection and unsubscribe. The installed public TypeScript SDK 1.31.0 advertises MCP versions through `2025-11-25`, not MCP 2.0. This server therefore does not advertise events or send callbacks. Durable application-event storage/worker and MCP 2.0 delivery need separate implementation and verification; no fake subscriptions are offered.
+## Historical verification before MCP removal
 
-## Verification
+MCP-specific results below describe the former implementation, not current functionality.
 
 Verified 2026-09-29:
 
@@ -101,3 +88,11 @@ The initial production contact smoke test was incorrectly reported as a failure 
 The disabled agent route now returns 404 instead of converting its feature gate into a 502. Cross-origin and malformed/oversized requests also retain their 403/400/413 statuses without starting OpenAI. Neither MCP nor customer-data agent execution was enabled by these fixes. Regression coverage includes altered and fabricated email references, duplicate/ambiguous source emails, and disabled/invalid agent requests.
 
 Post-fix verification: all 75 automated tests, lint, and the production build passed. Synthetic live contact calls passed. Production deployment of commit `4c760a2` was ready and aliased to `amountly.app`; the disabled agent returned 404 with a no-store response, and the contact form visibly displayed the original synthetic email after Smart Capture. No test contact or financial record was saved.
+
+### In-app-only verification after MCP removal
+
+Removed the MCP SDK and its unused dependency tree (87 packages), server route, plugin package, HTML panel, and development bridge. The production build contains only the direct financial-review, agent, and supporting-record API routes. The removed transport/panel tests were replaced with a successful direct supporting-record HTTP test.
+
+All 74 remaining automated tests, lint, and the production build passed. The in-app browser reloaded the synthetic React review, returned the expected totals ($1,800 outstanding, $965 obligations, $420 expenses), and displayed a supporting invoice. No browser errors or warnings were recorded. The dependency audit reported no vulnerabilities.
+
+The next useful release test is the account-mode review against an isolated live Supabase Auth/PostgREST stack: owner/member/outsider access, expired sessions, supporting-record ownership, and reconciliation against seeded balances. That local stack was unavailable during this check (its database container did not exist). Existing mocked authorization tests pass, but they do not replace this integration test. Customer-data review and agent gates remain disabled in production.
