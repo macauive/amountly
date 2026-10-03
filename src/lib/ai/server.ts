@@ -8,17 +8,35 @@ export class AiHttpError extends Error {
 
 // Imported only by the server route; no privileged/service-role client is used.
 export async function authorizeAiRequest(request: Request) {
+  if (process.env.NEXT_PUBLIC_BACKEND === 'render') {
+    const { serverClient, validateOrigin } = await import('@/lib/platform/server')
+    validateOrigin(request.headers, request.method !== 'GET')
+    return await serverClient(request.headers) as unknown as ReturnType<typeof createClient>
+  }
   const authorization = request.headers.get('authorization') ?? ''
   if (!/^Bearer [A-Za-z0-9._-]{20,8192}$/.test(authorization)) {
     throw new AiHttpError(401, 'Sign in to use AI')
   }
   const origin = request.headers.get('origin')
   const requestUrl = new URL(request.url)
+  // Self-hosted Next may see the internal listen address behind a TLS proxy.
+  // Use operator configuration, never caller-controlled forwarded host headers.
+  const configuredOrigin = process.env.AMOUNTLY_APP_ORIGIN
+  let trustedOrigin = requestUrl.origin
+  if (configuredOrigin !== undefined) {
+    try {
+      const url = new URL(configuredOrigin)
+      if (url.protocol !== 'https:' || url.origin !== configuredOrigin) throw new Error()
+      trustedOrigin = url.origin
+    } catch {
+      throw new AiHttpError(503, 'AI is temporarily unavailable')
+    }
+  }
   // Next's development server may reconstruct a loopback request as localhost.
   // Accept only the equivalent HTTP loopback origin on the same port in dev.
   // Host/forwarded-host headers never expand the production origin allowlist.
   let localDevelopmentOrigin = false
-  if (origin && process.env.NODE_ENV === 'development') {
+  if (origin && configuredOrigin === undefined && process.env.NODE_ENV === 'development') {
     try {
       const browserUrl = new URL(origin)
       const loopback = new Set(['localhost', '127.0.0.1', '[::1]'])
@@ -28,7 +46,7 @@ export async function authorizeAiRequest(request: Request) {
         && loopback.has(browserUrl.hostname) && loopback.has(requestUrl.hostname)
     } catch { /* Malformed origins remain denied. */ }
   }
-  if (origin && origin !== requestUrl.origin && !localDevelopmentOrigin) {
+  if (origin && origin !== trustedOrigin && !localDevelopmentOrigin) {
     throw new AiHttpError(403, 'Request not allowed')
   }
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL

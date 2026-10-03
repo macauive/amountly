@@ -1,0 +1,40 @@
+# Full Render backend. Existing amountly-db is provisioned separately.
+# Provisioning creates a paid service; confirm cost before applying.
+services:
+  - type: web
+    name: amountly
+    runtime: docker
+    branch: codex/render-hosting
+    region: ohio
+    plan: 1c-2g
+    numInstances: 1
+    autoDeployTrigger: off
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NEXT_PUBLIC_BACKEND
+        value: render
+      - key: AUTH_DATABASE_URL
+        sync: false
+      - key: DATA_DATABASE_URL
+        sync: false
+      - key: BETTER_AUTH_SECRET
+        sync: false
+      - key: POSTGREST_JWT_SECRET
+        sync: false
+      - key: AMOUNTLY_APP_ORIGIN
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        sync: false
+      - key: AMOUNTLY_REVIEW_MODE
+        sync: false

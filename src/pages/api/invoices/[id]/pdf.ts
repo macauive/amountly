@@ -1,3 +1,6 @@
+import { serverClient, nodeHeaders } from '@/lib/platform/server'
+import { AiHttpError } from '@/lib/ai/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { serializeCookieHeader } from '@supabase/ssr'
@@ -19,7 +22,9 @@ export default async function handler(request: NextApiRequest, response: NextApi
   try {
     // Use the user's cookie session and ordinary public key. Every query below
     // is subject to the same RLS as the browser; no privileged client is used.
-    const client = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+    const client = process.env.NEXT_PUBLIC_BACKEND === 'render'
+      ? await serverClient(nodeHeaders(request.headers)) as unknown as SupabaseClient
+      : createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
       cookies: {
         getAll: () => Object.entries(request.cookies).map(([name,value])=>({name,value:value ?? ''})),
         setAll: entries => { response.setHeader('Set-Cookie',entries.map(({name,value,options})=>serializeCookieHeader(name,value,options))) },
@@ -50,5 +55,5 @@ export default async function handler(request: NextApiRequest, response: NextApi
     response.setHeader('Content-Type','application/pdf')
     response.setHeader('Content-Disposition', `attachment; filename="${invoicePdfFilename(document.invoice_number)}"`)
     return response.status(200).send(bytes)
-  } catch { return failure(503) }
+  } catch (error) { return failure(error instanceof AiHttpError ? error.status : 503) }
 }

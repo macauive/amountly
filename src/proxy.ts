@@ -3,7 +3,8 @@ import { contentSecurityPolicy } from '@/lib/content-security-policy'
 
 export function proxy(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64')
-  const policy = contentSecurityPolicy(nonce, process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NODE_ENV === 'development')
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND === 'render' ? undefined : process.env.NEXT_PUBLIC_SUPABASE_URL
+  const policy = contentSecurityPolicy(nonce, backendUrl, process.env.NODE_ENV === 'development')
   const requestHeaders = new Headers(request.headers)
   // Overwrite caller-supplied values. Next applies this nonce to framework scripts.
   requestHeaders.set('x-nonce', nonce)

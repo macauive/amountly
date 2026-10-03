@@ -1,6 +1,7 @@
 import { getSupabaseClient } from '@/lib/supabase'
 import type { Expense, CreateExpenseInput, UpdateExpenseInput } from '@/types/models'
 import { recordError } from '@/services/review.service'
+import { usesRenderBackend } from '@/lib/platform/config'
 
 export interface ExpenseFilters {
   startDate?: string
@@ -102,6 +103,14 @@ export async function uploadReceipt(file: File): Promise<string> {
 
   if (file.size > maxBytes) {
     throw new Error('Receipt must be smaller than 10 MB')
+  }
+
+  if (usesRenderBackend) {
+    const response = await fetch('/api/receipts/upload', { method: 'PUT', headers: { 'Content-Type': file.type }, body: file })
+    if (!response.ok) throw new Error('Could not upload the receipt. Try again.')
+    const data = await response.json()
+    if (typeof data.path !== 'string' || !/^[0-9a-f-]{36}\/[0-9a-f-]{36}\.(jpg|png|webp|pdf)$/.test(data.path)) throw new Error('Invalid receipt response.')
+    return data.path
   }
 
   const { data: userData, error: userError } = await supabase.auth.getUser()

@@ -22,6 +22,8 @@ import {
 } from '@/components/ui/select'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAppState } from '@/contexts/AppStateContext'
+import { usesRenderBackend } from '@/lib/platform/config'
+import { changeRenderPassword } from '@/lib/platform/browser'
 import { getSupabaseClient } from '@/lib/supabase'
 import { Capability } from '@/types/enums'
 
@@ -105,7 +107,7 @@ export default function SettingsPage() {
   const [savingProfile, setSavingProfile] = useState(false)
 
   // ── Password ──
-  const [pwd, setPwd] = useState({ newPassword: '', confirm: '' })
+  const [pwd, setPwd] = useState({ currentPassword: '', newPassword: '', confirm: '' })
   const [savingPwd, setSavingPwd] = useState(false)
 
   // ── Organization ──
@@ -205,12 +207,12 @@ export default function SettingsPage() {
 
   const handleChangePassword = async () => {
     if (pwd.newPassword !== pwd.confirm) { toast.error('Passwords do not match'); return }
-    if (pwd.newPassword.length < 8) { toast.error('Password must be at least 8 characters'); return }
+    if (pwd.newPassword.length < (usesRenderBackend ? 12 : 8)) { toast.error(`Password must be at least ${usesRenderBackend ? 12 : 8} characters`); return }
     setSavingPwd(true)
     try {
-      const { error } = await supabase.auth.updateUser({ password: pwd.newPassword })
+      const { error } = await (usesRenderBackend ? changeRenderPassword(pwd.currentPassword, pwd.newPassword) : supabase.auth.updateUser({ password: pwd.newPassword }))
       if (error) throw new Error('Could not save these settings. Check the fields and your access.')
-      setPwd({ newPassword: '', confirm: '' })
+      setPwd({ currentPassword: '', newPassword: '', confirm: '' })
       toast.success('Password updated')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to update password')
@@ -418,12 +420,13 @@ export default function SettingsPage() {
             <CardContent className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
+                  {usesRenderBackend && <div className="space-y-2"><Label htmlFor="current-password">Current password</Label><Input id="current-password" type="password" autoComplete="current-password" value={pwd.currentPassword} onChange={e => setPwd(p => ({ ...p, currentPassword: e.target.value }))} /></div>}
                   <Label>New Password</Label>
                   <Input
                     type="password"
                     value={pwd.newPassword}
                     onChange={(e) => setPwd((p) => ({ ...p, newPassword: e.target.value }))}
-                    placeholder="Minimum 8 characters"
+                    placeholder={usesRenderBackend ? "Minimum 12 characters" : "Minimum 8 characters"}
                   />
                 </div>
                 <div className="space-y-2">

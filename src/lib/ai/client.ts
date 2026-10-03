@@ -9,12 +9,12 @@ type AiResponse<T> = {
 
 export async function runAiTask<T>(task: string, payload: unknown): Promise<T> {
   const { data: { session }, error } = await getSupabaseClient().auth.getSession()
-  if (error || !session?.access_token) throw new Error('Sign in to use AI')
+  if (error || !session?.user) throw new Error('Sign in to use AI')
   const response = await fetch('/api/ai', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${session.access_token}`,
+      ...(session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
     },
     body: JSON.stringify({ task, payload }),
   })

@@ -1,3 +1,6 @@
+import { serverClient, nodeHeaders } from '@/lib/platform/server'
+import { AiHttpError } from '@/lib/ai/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { createServerClient, serializeCookieHeader } from '@supabase/ssr'
 import { z } from 'zod'
@@ -17,7 +20,9 @@ export default async function handler(request:NextApiRequest,response:NextApiRes
   const query = workspaceReportQuery.safeParse(request.query)
   if (!query.success) return fail(400)
   try {
-    const client = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!,process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,{
+    const client = process.env.NEXT_PUBLIC_BACKEND === 'render'
+      ? await serverClient(nodeHeaders(request.headers)) as unknown as SupabaseClient
+      : createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!,process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,{
       cookies:{
         getAll:()=>Object.entries(request.cookies).map(([name,value])=>({name,value:value ?? ''})),
         setAll:entries=>{ response.setHeader('Set-Cookie',entries.map(({name,value,options})=>serializeCookieHeader(name,value,options))) },
@@ -33,5 +38,5 @@ export default async function handler(request:NextApiRequest,response:NextApiRes
     response.setHeader('Content-Type','text/csv; charset=utf-8')
     response.setHeader('Content-Disposition',`attachment; filename="${result.filename}"`)
     return response.status(200).send(result.csv)
-  } catch (error) { return fail(error instanceof ReportLimitError ? 413 : error instanceof z.ZodError ? 422 : 503) }
+  } catch (error) { return fail(error instanceof AiHttpError ? error.status : error instanceof ReportLimitError ? 413 : error instanceof z.ZodError ? 422 : 503) }
 }

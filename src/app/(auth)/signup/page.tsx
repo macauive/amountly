@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { usesRenderBackend } from '@/lib/platform/config'
 import { z } from 'zod'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -17,7 +18,7 @@ const signUpSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
   email: z.string().email('Please enter a valid email'),
   password: z.string()
-    .min(8, 'Password must be at least 8 characters')
+    .min(usesRenderBackend ? 12 : 8, `Password must be at least ${usesRenderBackend ? 12 : 8} characters`)
     .regex(/[a-z]/, 'Password must include a lowercase letter')
     .regex(/[A-Z]/, 'Password must include an uppercase letter')
     .regex(/[0-9]/, 'Password must include a number'),

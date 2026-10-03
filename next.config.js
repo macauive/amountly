@@ -1,5 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',
+  serverExternalPackages: ['pg', 'better-auth', 'nodemailer'],
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {

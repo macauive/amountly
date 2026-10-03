@@ -21,7 +21,7 @@ export function FinancialReview({ synthetic = false }: { synthetic?: boolean }) 
       if (!synthetic) {
         const { data } = await getSupabaseClient().auth.getSession()
         if (!data.session) throw new Error('Sign in to review your finances.')
-        headers.Authorization = `Bearer ${data.session.access_token}`
+        if (data.session.access_token) headers.Authorization = `Bearer ${data.session.access_token}`
       }
       const response = await fetch('/api/financial-review', { method: 'POST', headers, body: JSON.stringify(period), cache: 'no-store' })
       if (!response.ok) throw new Error(response.status === 404 ? 'Financial review is not enabled yet.' : 'Could not load the review. Check your dates and access, then try again.')

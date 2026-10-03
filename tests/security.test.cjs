@@ -46,6 +46,7 @@ function harness(options = {}) {
         NEXT_PUBLIC_SUPABASE_ANON_KEY: 'synthetic-public-test-key',
         OPENAI_API_KEY: 'synthetic-local-test-key',
         NODE_ENV: options.nodeEnv ?? 'production',
+        ...(options.appOrigin !== undefined ? { AMOUNTLY_APP_ORIGIN: options.appOrigin } : {}),
       } },
       fetch: async (_url, init) => {
         calls.provider++
@@ -110,6 +111,39 @@ test('AI loopback origin compatibility is development-only, same-port, and ignor
     assert.equal(response.status, expected, `${nodeEnv}: ${origin}`)
     assert.equal(h.calls.auth, expected === 401 ? 1 : 0)
     assert.equal(h.calls.provider, 0); assert.equal(h.calls.quota, 0)
+  }
+})
+
+test('self-hosted AI trusts the configured HTTPS origin, never proxy headers or the internal origin', async () => {
+  for (const [origin, expected] of [
+    ['https://app.example.invalid', 401],
+    ['https://evil.invalid', 403],
+    ['http://0.0.0.0:10000', 403],
+    ['https://app.example.invalid/path', 403],
+    ['https://app.example.invalid.evil.invalid', 403],
+    ['null', 403],
+    [undefined, 401], // Native clients authenticate without a browser Origin.
+  ]) {
+    const h = harness({ appOrigin: 'https://app.example.invalid', invalidToken: true })
+    const response = await h.load('src/app/api/ai/route.ts').POST(new Request('http://0.0.0.0:10000/api/ai', {
+      method: 'POST', headers: { authorization: 'Bearer synthetic_test_token_000000000000',
+        ...(origin === undefined ? {} : { origin }), host: 'evil.invalid',
+        'x-forwarded-host': 'evil.invalid', 'x-forwarded-proto': 'https' }, body: '{}',
+    }))
+    assert.equal(response.status, expected)
+    assert.equal(h.calls.auth, expected === 401 ? 1 : 0)
+    assert.equal(h.calls.provider, 0); assert.equal(h.calls.quota, 0)
+  }
+})
+
+test('invalid self-hosted origin configuration fails closed without exposing configuration', async () => {
+  for (const appOrigin of ['', 'invalid', 'http://app.example.invalid', 'https://app.example.invalid/',
+    'https://user:password@app.example.invalid', 'https://app.example.invalid?x=1']) {
+    const h = harness({ appOrigin })
+    const response = await h.load('src/app/api/ai/route.ts').POST(request())
+    assert.equal(response.status, 503)
+    assert.equal(h.calls.auth, 0); assert.equal(h.calls.provider, 0); assert.equal(h.calls.quota, 0)
+    assert.equal((await response.json()).error, 'AI is temporarily unavailable')
   }
 })
 

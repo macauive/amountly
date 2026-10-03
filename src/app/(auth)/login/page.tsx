@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { usesRenderBackend } from '@/lib/platform/config'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -102,6 +103,7 @@ export default function LoginPage() {
             Log In
           </Button>
           <p className="text-sm text-muted-foreground text-center">
+            {usesRenderBackend && <><Link href="/reset-password" className="text-primary hover:underline">Forgot password?</Link><br /></>}
             Don&apos;t have an account?{' '}
             <Link href="/signup" className="text-primary hover:underline">
               Sign up

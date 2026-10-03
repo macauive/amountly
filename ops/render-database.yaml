@@ -1,0 +1,11 @@
+# Target database for the full migration; provisioning costs $7.50/month
+# at the price inspected on October 2, 2026. Reconfirm before applying.
+# This creates an empty target; it does not import data or switch production.
+databases:
+  - name: amountly-db
+    region: ohio
+    plan: 0.1c-256mb
+    diskSizeGB: 5
+    postgresMajorVersion: "17"
+    ipAllowList: []
+    storageAutoscalingEnabled: false

@@ -10,7 +10,7 @@ export function FinancialReviewRecord({ kind, id }: { kind: string; id: string }
       try {
         const { data } = await getSupabaseClient().auth.getSession()
         if (!data.session) throw new Error()
-        const response = await fetch('/api/financial-review/record', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.session.access_token}` }, body: JSON.stringify({ kind, id }), cache: 'no-store' })
+        const response = await fetch('/api/financial-review/record', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(data.session.access_token ? { Authorization: `Bearer ${data.session.access_token}` } : {}) }, body: JSON.stringify({ kind, id }), cache: 'no-store' })
         if (!response.ok) throw new Error()
         const result = await response.json()
         if (active) setRecord(result)

@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.env*
+.vercel
+AGENTS.md
+audits
+supabase/.temp
+supabase/.branches
+*.log
+*.dump
+.DS_Store
