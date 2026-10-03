@@ -1,0 +1,3 @@
+export function PolicyPage({ title, children }: { title: string; children: React.ReactNode }) {
+  return <main className="mx-auto max-w-3xl space-y-6 p-6 sm:p-10"><a href="/" className="font-semibold">Amountly</a><h1 className="text-3xl font-semibold">{title}</h1><div className="space-y-5 leading-relaxed">{children}</div><nav className="flex flex-wrap gap-4 border-t pt-6"><a className="underline" href="/privacy">Privacy</a><a className="underline" href="/terms">Terms</a><a className="underline" href="/support">Support</a><a className="underline" href="/chatgpt/connections">ChatGPT connections</a></nav></main>
+}

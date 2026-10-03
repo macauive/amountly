@@ -617,6 +617,7 @@ export default function SettingsPage() {
 
         {/* ── Integrations ── */}
         <TabsContent value="integrations" className="mt-6">
+          {process.env.NEXT_PUBLIC_BACKEND === 'render' && <Card className="mb-4"><CardHeader><CardTitle>ChatGPT</CardTitle><CardDescription>Review permitted financial records through a read-only connection.</CardDescription></CardHeader><CardContent><a href="/chatgpt/connections" className="underline">Manage ChatGPT access</a><p className="mt-2 text-sm text-muted-foreground">Start linking from ChatGPT. Amountly keeps its account and organization permissions.</p></CardContent></Card>}
           <div className="grid gap-4 sm:grid-cols-2">
             {INTEGRATIONS.map((integration) => (
               <Card key={integration.title}>
@@ -674,8 +675,7 @@ export default function SettingsPage() {
                 ))}
               </div>
               <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                💡 Your full dataset lives in Supabase. For a complete database backup, use{' '}
-                <span className="font-medium">Supabase Dashboard → Project Settings → Backups</span>.
+                Export the records you need before closing your account. For access, correction or deletion requests, visit <a href="/support" className="underline">Amountly support</a>.
               </div>
             </CardContent>
           </Card>

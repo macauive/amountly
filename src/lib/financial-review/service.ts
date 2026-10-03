@@ -1,12 +1,16 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { z } from 'zod'
+import { z } from 'zod/v3'
 import { Capability } from '@/types/enums'
 import { hasCapability } from '@/lib/capabilities'
 import { actorSchema, snapshotSchema, periodSchema, ReviewError, addDays, type Actor, type Period, type Snapshot } from '@/lib/financial-review/contracts'
 import { calculateReview } from '@/lib/financial-review/calculate'
 
+export type ReviewClient = Pick<SupabaseClient, 'from'> & {
+  auth: { getUser: () => Promise<{ data: { user: { id: string } | null }; error: unknown }> }
+}
+
 // Only server-authenticated clients may call this service. No owner IDs come from tool input.
-export async function readActor(client: SupabaseClient): Promise<Actor> {
+export async function readActor(client: ReviewClient): Promise<Actor> {
   const { data, error } = await client.auth.getUser()
   if (error || !data.user) throw new ReviewError(401, 'Sign in to review your finances.')
   const result = await client.from('users').select('id,organization_id,account_type,role,is_active').eq('id', data.user.id).single()
@@ -16,7 +20,7 @@ export async function readActor(client: SupabaseClient): Promise<Actor> {
   return actor.data
 }
 
-export async function loadReviewSnapshot(client: SupabaseClient, actorInput: Actor, periodInput: Period): Promise<Snapshot> {
+export async function loadReviewSnapshot(client: ReviewClient, actorInput: Actor, periodInput: Period): Promise<Snapshot> {
   const actor = actorSchema.parse(actorInput), period = periodSchema.parse(periodInput)
   const can = (capability: Capability) => hasCapability(actor.account_type, actor.role, capability)
   async function pages(build: (offset: number) => PromiseLike<{ data: unknown; error: unknown }>): Promise<Record<string, unknown>[]> {
@@ -87,7 +91,7 @@ export async function loadReviewSnapshot(client: SupabaseClient, actorInput: Act
   if (snapshot.payments.some(p => !ids.has(p.invoice_id))) throw new ReviewError(403)
   return snapshot
 }
-export async function reviewForClient(client: SupabaseClient, period: Period, asOf: string) {
+export async function reviewForClient(client: ReviewClient, period: Period, asOf: string) {
   const actor = await readActor(client)
   return calculateReview(await loadReviewSnapshot(client, actor, period), period, asOf)
 }
@@ -107,7 +111,7 @@ export function summarizeRecord(kind: z.infer<typeof recordQuerySchema>['kind'],
     date: 'expense_date' in row ? row.expense_date : row.due_date,
     receiptAttached: 'receipt_path' in row ? !!(row.receipt_path?.trim() || row.receipt_url?.trim()) : undefined }
 }
-export async function readSourceRecord(client: SupabaseClient, input: unknown) {
+export async function readSourceRecord(client: ReviewClient, input: unknown) {
   const query = recordQuerySchema.parse(input), actor = await readActor(client)
   const can = (cap: Capability) => hasCapability(actor.account_type, actor.role, cap)
   const permission = query.kind === 'invoices' ? can(Capability.viewInvoices) : query.kind === 'bills' ? actor.account_type === 'personal' && can(Capability.viewBills)

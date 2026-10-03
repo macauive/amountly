@@ -15,6 +15,7 @@ COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 COPY --from=build --chown=node:node /app/public ./public
 COPY --chown=node:node scripts/render/start.mjs ./start.mjs
+COPY --chown=node:node scripts/render/chatgpt-maintenance.mjs ./chatgpt-maintenance.mjs
 USER node
 EXPOSE 10000
 CMD ["node", "start.mjs"]

@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from 'zod/v3'
 import { AccountType, Role } from '@/types/enums'
 
 export const day = z.string().regex(/^20\d{2}-\d{2}-\d{2}$/).refine(value => {

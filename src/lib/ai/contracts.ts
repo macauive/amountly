@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from 'zod/v3'
 import { AccountType, ExpenseCategory } from '@/types/enums'
 
 export const aiRoutes = ['/dashboard', '/bills', '/expenses', '/invoices', '/time-entries', '/tax'] as const

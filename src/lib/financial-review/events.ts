@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from 'zod/v3'
 import { ReviewError } from '@/lib/financial-review/contracts'
 import type { FinancialReview } from '@/lib/financial-review/calculate'
 

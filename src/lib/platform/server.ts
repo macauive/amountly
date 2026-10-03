@@ -34,6 +34,11 @@ export async function identityToken(identity: { id: string; email: string }) {
 export const privateDataOrigin = 'http://127.0.0.1:3001'
 export async function serverClient(headers: Headers) {
   const identity = await requireIdentity(headers)
+  return clientForIdentity(identity)
+}
+
+// Identity must come from validated session/OAuth state, never tool arguments.
+export async function clientForIdentity(identity: { id: string; email: string }) {
   const token = await identityToken(identity)
   const client = new PostgrestClient(privateDataOrigin, {
     headers: { Authorization: `Bearer ${token}` },

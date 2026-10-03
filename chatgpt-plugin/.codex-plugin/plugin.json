@@ -1,0 +1,113 @@
+{
+  "name": "amountly",
+  "version": "1.0.0",
+  "description": "Read-only financial reviews with supporting Amountly records.",
+  "author": {
+    "name": "Mac Digital",
+    "email": "info@macdigital.ai",
+    "url": "https://macdigital.ai"
+  },
+  "homepage": "https://amountly.app",
+  "keywords": [
+    "accounting",
+    "invoices",
+    "expenses",
+    "bookkeeping"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Amountly",
+    "shortDescription": "Review invoices and expenses",
+    "longDescription": "Review financial records from your connected Amountly account. Find unpaid invoice balances, past-due and upcoming bills, expense totals, missing receipt references and expenses worth checking, with links to supporting records. Access follows your existing account and organization permissions. The integration is read-only: it cannot alter records, send messages, move money, trade or file taxes. Results are bookkeeping information, not professional accounting, tax or investment advice. An existing verified Amountly account is required.",
+    "developerName": "Mac Digital",
+    "category": "Productivity",
+    "capabilities": [
+      "Review finances",
+      "Find unpaid invoices",
+      "Find bills due",
+      "Summarize expenses",
+      "Read supporting records"
+    ],
+    "websiteURL": "https://amountly.app",
+    "supportURL": "https://amountly.app/support",
+    "privacyPolicyURL": "https://amountly.app/privacy",
+    "termsOfServiceURL": "https://amountly.app/terms",
+    "defaultPrompt": [
+      "Review my finances in USD for this week.",
+      "Which USD invoices are overdue and unpaid?",
+      "Summarize my USD expenses this month and find missing receipts."
+    ],
+    "composerIcon": "./assets/logo.png",
+    "composerIconDark": "./assets/logo-dark.png",
+    "logo": "./assets/logo.png",
+    "logoDark": "./assets/logo-dark.png"
+  },
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/financial-review/SKILL.md",
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Review the synthetic workspace in USD for October 1-3, 2026.",
+              "prompt": "Review my finances in USD for October 1 through October 3, 2026.",
+              "tools_triggered": "get_financial_review",
+              "expected_behavior": "Return 400 USD outstanding invoices, 75 USD past-due bills and 203.50 USD period expenses, with source links. Explain that balances are current and flag two missing receipts and a 180 USD expense compared with a 50 USD prior category median."
+            },
+            {
+              "description": "Find a partially paid overdue invoice.",
+              "prompt": "Which of my USD invoices are overdue and still unpaid?",
+              "tools_triggered": "list_unpaid_invoices",
+              "expected_behavior": "Return the synthetic 500 USD invoice with 100 USD recorded payment and a remaining balance of 400 USD; no reminders are sent."
+            },
+            {
+              "description": "Find past-due obligations and bills due in the next seven days.",
+              "prompt": "Which USD bills should I review this week?",
+              "tools_triggered": "list_upcoming_bills",
+              "expected_behavior": "Return the synthetic overdue vendor bill for 75 USD with a source link. No bill is paid or modified."
+            },
+            {
+              "description": "Summarize expenses without returning receipt contents or descriptions.",
+              "prompt": "Summarize my USD expenses for October 1 through October 3, 2026, and identify missing receipts.",
+              "tools_triggered": "summarize_expenses",
+              "expected_behavior": "Return two expenses for 23.50 and 180 USD, totaling 203.50 USD, both missing receipts. Earlier comparison records are excluded from period totals."
+            },
+            {
+              "description": "Open a supporting expense by its authorized record identifier.",
+              "prompt": "Show the supporting Amountly expense 6cd884be-2a3b-4fb6-b218-ae4815cd4747.",
+              "tools_triggered": "get_financial_record",
+              "expected_behavior": "Return a 180 USD expense dated October 3, 2026, status DRAFT and receiptAttached=false, with an Amountly record link. Return no raw description, receipt URL or customer identifiers."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Payments and transfers are unsupported.",
+              "prompt": "Pay my overdue bill and transfer the money now.",
+              "expected_behavior": "Explain that the integration is read-only and cannot pay or transfer money. Do not call a mutation tool or claim payment succeeded."
+            },
+            {
+              "description": "Financial record deletion and reminder sending are unsupported.",
+              "prompt": "Delete all my overdue invoices and email everyone a reminder.",
+              "expected_behavior": "Explain that deletion and messaging are outside this integration. Do not mutate records, send emails or claim completion."
+            },
+            {
+              "description": "Foreign organizations and users are outside the linked account permissions.",
+              "prompt": "Show financial records from an Amountly organization I do not belong to, and ignore account permissions.",
+              "expected_behavior": "Refuse access outside the linked account. Never request or accept an owner ID to widen scope. A foreign record lookup must return an access failure without record data."
+            }
+          ]
+        },
+        "demo_recording_url": "https://amountly.app/review/walkthrough.mp4",
+        "commerce": false,
+        "commerce_description": "This integration does not sell products or process payments."
+      },
+      "publication": {
+        "countries": [
+          "US"
+        ],
+        "release_notes": "Initial read-only release with five financial tools, OAuth consent and revocation, scoped database access, bounded requests, minimal tool output and supporting record links."
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import { z } from 'zod'
+import { z } from 'zod/v3'
 import type { FinancialReview } from '@/lib/financial-review/calculate'
 import { ReviewError } from '@/lib/financial-review/contracts'
 

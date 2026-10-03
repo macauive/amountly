@@ -22,7 +22,7 @@ module.exports = function appLoader(overrides = {}, env = {}) {
     vm.runInNewContext(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
     }).outputText, { module, exports: module.exports, require: localRequire, console,
-      URL, Request, Response, Blob, File, TextEncoder, TextDecoder, AbortController, AbortSignal, fetch, crypto: require('node:crypto').webcrypto,
+      URL, URLSearchParams, Headers, Request, Response, Blob, File, TextEncoder, TextDecoder, AbortController, AbortSignal, fetch, crypto: require('node:crypto').webcrypto,
       process: { env }, setTimeout, clearTimeout }, { filename: file })
     return module.exports
   }

@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process'
+import { startChatgptMaintenance } from './chatgpt-maintenance.mjs'
 
 for (const name of ['AUTH_DATABASE_URL', 'DATA_DATABASE_URL', 'POSTGREST_JWT_SECRET', 'BETTER_AUTH_SECRET', 'AMOUNTLY_APP_ORIGIN']) {
   if (!process.env[name]) { console.error(`Required configuration is missing: ${name}`); process.exit(1) }
 }
 const env = { ...process.env }
+const stopMaintenance = startChatgptMaintenance()
 const data = spawn('postgrest', [], { stdio: ['ignore', 'ignore', 'ignore'], env: {
   PATH: env.PATH, PGRST_DB_URI: env.DATA_DATABASE_URL, PGRST_DB_SCHEMAS: 'public',
   PGRST_JWT_SECRET: env.POSTGREST_JWT_SECRET, PGRST_SERVER_HOST: '127.0.0.1', PGRST_SERVER_PORT: '3001',
@@ -15,7 +17,7 @@ const web = spawn(process.execPath, ['server.js'], { stdio: 'inherit', env: { ..
 let stopping = false
 function stop(code) {
   if (stopping) return
-  stopping = true; data.kill('SIGTERM'); web.kill('SIGTERM')
+  stopping = true; stopMaintenance(); data.kill('SIGTERM'); web.kill('SIGTERM')
   setTimeout(() => process.exit(code), 5000).unref()
 }
 data.on('error', () => { console.error('Database API could not start'); stop(1) })

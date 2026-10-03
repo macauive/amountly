@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { z } from 'zod'
+import { z } from 'zod/v3'
 import { reportPeriod, workspacePeriodCsv } from '@/lib/reporting'
 
 export const workspaceReportQuery = z.object({

@@ -3,7 +3,7 @@
 import { mkdir, readFile, writeFile, rename, rmdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { z } from 'zod'
+import { z } from 'zod/v3'
 import { prepareFollowThrough, type FollowThroughState } from '@/lib/financial-review/events'
 import type { FinancialReview } from '@/lib/financial-review/calculate'
 
