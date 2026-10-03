@@ -3,7 +3,7 @@ import { z } from 'zod/v3'
 import { authPool, getAuth } from '@/lib/platform/auth'
 import { clientForIdentity } from '@/lib/platform/server'
 import { AiHttpError } from '@/lib/ai/server'
-import { allowedClientDocument, chatgptEnabled, mcpResource, oauthIssuer, readScope } from '@/lib/chatgpt/config'
+import { allowedClientDocument, chatgptEnabled, mcpResource, oauthIssuer, readScope, connectionScopes } from '@/lib/chatgpt/config'
 import type { ReviewClient } from '@/lib/financial-review/service'
 
 export const privateHeaders = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }
@@ -74,7 +74,7 @@ export async function mcpClient(request: Request) {
 export function mcpAuthError(error: unknown) {
   const status = error instanceof AiHttpError ? error.status : error instanceof z.ZodError ? 400 : 503
   const headers = new Headers(privateHeaders)
-  if (status === 401 || status === 403) headers.set('WWW-Authenticate', `Bearer resource_metadata="${mcpResource().replace('/mcp', '/.well-known/oauth-protected-resource')}", scope="${readScope}", error="${status === 401 ? 'invalid_token' : 'insufficient_scope'}"`)
+  if (status === 401 || status === 403) headers.set('WWW-Authenticate', `Bearer resource_metadata="${mcpResource().replace('/mcp', '/.well-known/oauth-protected-resource')}", scope="${connectionScopes.join(' ')}", error="${status === 401 ? 'invalid_token' : 'insufficient_scope'}"`)
   if (status === 429) headers.set('Retry-After', '60')
   return Response.json({ error: status === 503 ? 'Amountly is temporarily unavailable.' : error instanceof AiHttpError ? error.message : 'Request failed.' }, { status, headers })
 }

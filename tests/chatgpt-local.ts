@@ -5,6 +5,7 @@ import { hashPassword } from 'better-auth/crypto'
 import { getAuth, authPool } from '../src/lib/platform/auth'
 import { validateClaims } from '../src/lib/chatgpt/auth'
 import { generateKeyPair, exportJWK, SignJWT } from 'jose'
+import { request as httpRequest } from 'node:http'
 
 const url = new URL(process.env.RENDER_TEST_ADMIN_URL ?? '')
 assert.equal(url.hostname,'127.0.0.1'); assert.equal(url.port,'54399'); assert.equal(url.pathname,'/render_rehearsal')
@@ -24,14 +25,29 @@ async function api(path:string, body?:object, extra:Record<string,string>={}) {
 async function tokenRequest(values:Record<string,string>) {
   return fetch(base+'/api/auth/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:clientId,...values})})
 }
-async function authorize() {
-  const verifier=randomBytes(32).toString('base64url'), state=randomBytes(24).toString('base64url')
+async function authorize(forceConsent=true) {
+  const verifier=randomBytes(32).toString('base64url'), state='openai_platform_oauth_relay__'+randomBytes(750).toString('base64url')
   const query=new URLSearchParams({client_id:clientId,redirect_uri:callback,response_type:'code',scope:'amountly:read offline_access email',state,
-    resource,code_challenge_method:'S256',code_challenge:createHash('sha256').update(verifier).digest('base64url'),prompt:'consent'})
-  const auth=await fetch(base+'/api/auth/oauth2/authorize?'+query,{headers:{Cookie:cookie,Accept:'text/html'},redirect:'manual'})
+    resource,code_challenge_method:'S256',code_challenge:createHash('sha256').update(verifier).digest('base64url')})
+  if(forceConsent) query.set('prompt','consent')
+  // Undici rewrites Sec-Fetch-Mode to cors. Use HTTP directly to exercise the
+  // provider's actual navigation response rather than its fetch JSON response.
+  const auth=await new Promise<Response>((resolve,reject)=>{
+    const request=httpRequest(base+'/api/auth/oauth2/authorize?'+query,{headers:{Cookie:cookie,Accept:'text/html','Sec-Fetch-Mode':'navigate'}},response=>{
+      const chunks:Buffer[]=[];response.on('data',chunk=>chunks.push(chunk));response.on('end',()=>{
+        const headers=new Headers();if(response.headers.location)headers.set('location',response.headers.location)
+        resolve(new Response(Buffer.concat(chunks),{status:response.statusCode,headers}))
+      })
+    });request.on('error',reject);request.end()
+  })
   assert.ok([200,302].includes(auth.status),'authorization redirects to consent')
   const target=auth.status===302 ? auth.headers.get('location') : (await auth.json()).url
   const consent=new URL(target!,base)
+  if(!forceConsent && consent.origin==='https://chatgpt.com') {
+    assert.equal(auth.status,302,'browser code response preserves its redirect')
+    assert.equal(consent.searchParams.get('state'),state)
+    return {verifier,code:consent.searchParams.get('code')!}
+  }
   assert.equal(consent.pathname,'/chatgpt/consent')
   const accepted=await api('/api/auth/oauth2/consent',{accept:true,oauth_query:consent.searchParams.toString()})
   if (accepted.status!==200) console.log('Consent failure', await accepted.clone().json(), 'query fields', [...consent.searchParams.keys()])
@@ -105,6 +121,11 @@ async function main() {
   const unsupported=(await call('pay_bill',{id:vendorBill})).result
   assert.ok(unsupported.error || unsupported.result?.isError,'unsupported mutation has no tool')
   assert.equal((await db.query('select status from vendor_bills where id=$1',[vendorBill])).rows[0].status,'overdue','no bill mutation')
+  const direct=await authorize(false), directResponse=await tokenRequest({grant_type:'authorization_code',code:direct.code,code_verifier:direct.verifier,redirect_uri:callback,resource})
+  assert.equal(directResponse.status,200,'previously consented browser authorization succeeds')
+  const originalToken=token;token=(await directResponse.json()).access_token
+  assert.equal((await call('tools/list')).response.status,200,'browser redirect grant is recorded')
+  token=originalToken
   assert.equal((await tokenRequest({grant_type:'authorization_code',code:grant.code,code_verifier:grant.verifier,redirect_uri:callback,resource})).status,400,'code replay rejected')
   assert.equal((await call('tools/list')).response.status,401,'code replay revokes associated tokens')
   const renewed=await authorize(), renewedResponse=await tokenRequest({grant_type:'authorization_code',code:renewed.code,code_verifier:renewed.verifier,redirect_uri:callback,resource})

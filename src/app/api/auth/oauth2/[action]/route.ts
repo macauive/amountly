@@ -59,7 +59,7 @@ async function handle(request: Request, context: { params: Promise<{ action: str
     const response = await getAuth().handler(new Request(request.url, { method: request.method, headers: request.headers, body }))
     const headers = new Headers(response.headers)
     for (const [key, value] of Object.entries(privateHeaders)) headers.set(key, value)
-    if (!response.ok) {
+    if (response.status >= 400) {
       let code = 'invalid_request'
       try { const failure = await response.json(); if (['invalid_request','invalid_client','invalid_grant','unauthorized_client','unsupported_grant_type','invalid_scope','access_denied','temporarily_unavailable'].includes(failure.error)) code = failure.error } catch { /* Keep the bounded public fallback. */ }
       return Response.json({ error: code, error_description: 'Connection could not be completed. Start again in ChatGPT.' }, { status: response.status, headers })

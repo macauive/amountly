@@ -9,7 +9,7 @@ export function validateAuthorization(query: URLSearchParams) {
   if (!allowedClientDocument(query.get('client_id') ?? '') || !allowedCallback(query.get('redirect_uri') ?? '')
     || query.get('response_type') !== 'code' || query.get('resource') !== mcpResource()
     || query.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(query.get('code_challenge') ?? '')
-    || !(query.get('state') ?? '').length || (query.get('state') ?? '').length > 512) throw new AiHttpError(400, 'Invalid connection request')
+    || !(query.get('state') ?? '').length || (query.get('state') ?? '').length > 2048) throw new AiHttpError(400, 'Invalid connection request')
   const scopes = (query.get('scope') ?? '').split(' ')
   if (!scopes.includes(readScope) || scopes.some(scope => !(oauthScopes as readonly string[]).includes(scope))) throw new AiHttpError(400, 'Invalid permission request')
 }
