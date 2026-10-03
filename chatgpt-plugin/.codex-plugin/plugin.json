@@ -1,6 +1,6 @@
 {
   "name": "amountly",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Read-only financial reviews with supporting Amountly records.",
   "author": {
     "name": "Mac Digital",
@@ -21,7 +21,7 @@
     "shortDescription": "Review invoices and expenses",
     "longDescription": "Review financial records from your connected Amountly account. Find unpaid invoice balances, past-due and upcoming bills, expense totals, missing receipt references and expenses worth checking, with links to supporting records. Access follows your existing account and organization permissions. The integration is read-only: it cannot alter records, send messages, move money, trade or file taxes. Results are bookkeeping information, not professional accounting, tax or investment advice. An existing verified Amountly account is required.",
     "developerName": "Mac Digital",
-    "category": "Productivity",
+    "category": "Finance",
     "capabilities": [
       "Review finances",
       "Find unpaid invoices",
