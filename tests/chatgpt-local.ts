@@ -49,6 +49,12 @@ async function authorize(forceConsent=true) {
     return {verifier,code:consent.searchParams.get('code')!}
   }
   assert.equal(consent.pathname,'/chatgpt/consent')
+  const page=await new Promise<string>((resolve,reject)=>{
+    const request=httpRequest(base+consent.pathname+consent.search,{headers:{Cookie:cookie,Accept:'text/html','Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'navigate','Sec-Fetch-Dest':'document'}},response=>{
+      const chunks:Buffer[]=[];response.on('data',chunk=>chunks.push(chunk));response.on('end',()=>resolve(Buffer.concat(chunks).toString()))
+    });request.on('error',reject);request.end()
+  })
+  assert.ok(page.includes('Allow ChatGPT to read Amountly?'),'signed cross-site navigation displays consent')
   const accepted=await api('/api/auth/oauth2/consent',{accept:true,oauth_query:consent.searchParams.toString()})
   if (accepted.status!==200) console.log('Consent failure', await accepted.clone().json(), 'query fields', [...consent.searchParams.keys()])
   assert.equal(accepted.status,200,'verified consent succeeds')

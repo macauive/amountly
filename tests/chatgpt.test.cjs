@@ -8,6 +8,20 @@ const load=loadApp({
   '@/lib/ai/server':{AiHttpError:class AiHttpError extends Error{constructor(status,message){super(message);this.status=status}}},
 },{AMOUNTLY_APP_ORIGIN:origin,NEXT_PUBLIC_BACKEND:'render',AMOUNTLY_CHATGPT:'enabled',NODE_ENV:'production'})
 const config=load('src/lib/chatgpt/config.ts'), auth=load('src/lib/chatgpt/auth.ts')
+test('only explicit document navigation can bypass the cross-site read guard',()=>{
+  const server=loadApp({
+    '@/lib/platform/auth':{getAuth:()=>({}),authPool:()=>({})},
+    '@/lib/ai/server':{AiHttpError:class extends Error{constructor(status,message){super(message);this.status=status}}},
+  },{AMOUNTLY_APP_ORIGIN:origin,NEXT_PUBLIC_BACKEND:'render',NODE_ENV:'production'})('src/lib/platform/server.ts')
+  const navigation=new Headers({'Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'navigate','Sec-Fetch-Dest':'document'})
+  assert.doesNotThrow(()=>server.validateOrigin(navigation,false,true))
+  assert.throws(()=>server.validateOrigin(navigation))
+  assert.throws(()=>server.validateOrigin(navigation,true,true))
+  for(const change of [{'Sec-Fetch-Mode':'cors'},{'Sec-Fetch-Dest':'empty'},{Origin:'https://evil.example'}]) {
+    const headers=new Headers(navigation);for(const [name,value] of Object.entries(change))headers.set(name,value)
+    assert.throws(()=>server.validateOrigin(headers,false,true))
+  }
+})
 test('only exact HTTPS ChatGPT client documents and registered callback shapes are allowed',()=>{
   for(const uri of ['https://chatgpt.com/oauth/client.json','https://chatgpt.com/oauth/qa-123/client.json']) assert.equal(config.allowedClientDocument(uri),true)
   for(const uri of ['http://chatgpt.com/oauth/client.json','https://chatgpt.com.evil.example/oauth/client.json','https://chatgpt.com@127.0.0.1/oauth/client.json','https://chatgpt.com/oauth/client.json?url=http://127.0.0.1','https://chatgpt.com/oauth/client.json#fragment','https://chatgpt.com/oauth/../client.json','https://127.0.0.1/oauth/client.json','file:///etc/passwd']) assert.equal(config.allowedClientDocument(uri),false,uri)

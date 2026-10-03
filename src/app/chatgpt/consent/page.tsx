@@ -11,7 +11,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<Rec
   try {
     const params = await searchParams
     query = await validateSignedQuery(signedSearchParams(params))
-    await requireIdentity(new Headers(await headers()))
+    await requireIdentity(new Headers(await headers()), true)
   } catch { return <main className="mx-auto max-w-md p-8"><h1 className="text-2xl font-semibold">Connection request expired</h1><p className="mt-4">Sign in and start account linking again in ChatGPT.</p></main> }
   const scopes = new URLSearchParams(query).get('scope')?.split(' ') ?? []
   return <main className="mx-auto max-w-lg space-y-6 p-8"><h1 className="text-2xl font-semibold">Allow ChatGPT to read Amountly?</h1>

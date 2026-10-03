@@ -4,14 +4,18 @@ import { getAuth, authPool } from '@/lib/platform/auth'
 import { appOrigin, requiredSecret } from '@/lib/platform/config'
 import { AiHttpError } from '@/lib/ai/server'
 
-export function validateOrigin(headers: Headers, mutating = false) {
+export function validateOrigin(headers: Headers, mutating = false, allowNavigation = false) {
   const origin = headers.get('origin')
-  if ((origin && origin !== appOrigin()) || headers.get('sec-fetch-site') === 'cross-site'
+  // A signed OAuth consent GET may arrive through a cross-site browser redirect.
+  // This exception never applies to fetches, form submissions or API mutations.
+  const navigation = allowNavigation && !mutating && !origin
+    && headers.get('sec-fetch-mode') === 'navigate' && headers.get('sec-fetch-dest') === 'document'
+  if ((origin && origin !== appOrigin()) || (headers.get('sec-fetch-site') === 'cross-site' && !navigation)
     || (mutating && !origin && !headers.has('authorization'))) throw new AiHttpError(403, 'Request not allowed')
 }
 
-export async function requireIdentity(headers: Headers) {
-  validateOrigin(headers)
+export async function requireIdentity(headers: Headers, allowNavigation = false) {
+  validateOrigin(headers, false, allowNavigation)
   // No cookie cache: session revocation and account disablement apply immediately.
   const session = await getAuth().api.getSession({ headers, query: { disableCookieCache: true } })
   if (!session?.user.emailVerified || session.user.disabled
