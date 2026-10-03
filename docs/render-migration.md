@@ -2,7 +2,8 @@
 
 Updated October 2, 2026. The user authorized moving Amountly web, database,
 authentication and receipts off hosted Vercel/Supabase to Render. Production
-has not switched. Preparation branch: `codex/render-hosting`, baseline `1609b6a`.
+now uses the final Render database. DNS points to Render; custom-domain TLS
+issuance is pending. Deployment branch: `codex/render-hosting`, baseline `1609b6a`.
 
 ## Implemented architecture
 
@@ -61,48 +62,56 @@ write pause; any new objects must be migrated before cutover.
   findings are development Tailwind dependencies requiring a separate major
   upgrade; they are not silently treated as resolved.
 
-## Render resources and remaining deployment steps
+## Render deployment and cutover record
 
-The approved `amountly-db` PostgreSQL 17 instance is Available in Ohio:
-0.1 CPU, 256 MB RAM, 5 GB storage, autoscaling off, $7.50/month base cost.
-The user approved a temporary current-IP-only import rule, which is active.
-Remove it immediately after migration. The isolated `amountly_candidate` database
-now has all 36 application tables and nine accounts; row digests and password
-hashes match the protected source snapshot. The production database is still empty.
+The final database is `amountly_db` on the approved PostgreSQL 17 instance in
+Ohio: 0.1 CPU, 256 MB RAM, 5 GB storage, autoscaling off, $7.50/month base cost.
+The temporary import IP rule was removed. A real external PostgreSQL connection
+is denied, while the deployed app remains healthy through the private network.
 [Database dashboard](https://dashboard.render.com/d/dpg-db05n4vavr4c73e8nq60-a/info).
 
-`ops/render-app.yaml` defines the full Docker app: Ohio, one 0.5 CPU / 512 MB instance,
-manual deploys, no disk, and protected environment variables. Proposed web cost
-is $7/month, approved by the user, for an Amountly subtotal of $14.50/month.
-The user also resized Drop It to $7/month. Including both databases, the
-workspace base total will be $29/month
-before usage. The web resource has not yet been submitted.
+The Docker web service is live on one 0.5 CPU / 512 MB instance at $7/month,
+with manual deploys, no disk and protected runtime-role credentials. It uses
+`amountly_db`, verified by creating a QA session through the live API and checking
+that the session exists in the final database. Owner credentials are not deployed.
+[Service dashboard](https://dashboard.render.com/web/srv-db0717id0e5s73ac6lig).
+Deployed application commit: `d46cb57` on `codex/render-hosting`.
 
-The Proton token is saved in owner-only local storage outside Git. SMTP
-authentication and certificate-verified STARTTLS succeeded for the configured
-sender. No real email has been sent and the token has not yet been deployed.
+The user also resized Drop It to $7/month. Including both PostgreSQL databases,
+the configured workspace base total is $29/month before usage and taxes.
+Resizing compute later remains possible; storage autoscaling is disabled.
 
-Before source production mutation or domain cutover:
+The final cutover backup includes application/private schemas, Auth, Storage,
+migration history, and the reversible source write-pause mechanism. It is stored
+outside Git with owner-only permissions and SHA-256 checksums. The frozen source
+was restored locally before importing the final Render database. Exact comparison
+passed for all 36 tables and 91 rows, nine account IDs/password hashes/statuses,
+and 133 existing access policies. There were zero stored receipt objects.
 
-1. Review and push the tested migration branch. Prepare Render Docker service
-   secrets using private runtime-role URLs; never deploy the database owner URL.
-2. Import and validate an isolated Render candidate. Use `bootstrap.sql`, restore
-   application/private schemas and auth UUID anchors, run `import-auth.ts`, then
-   `configure-roles.mjs`. The role script requires a new owner-only destination
-   outside Git and persists credentials before transactional role changes.
-3. Verify the Render candidate's login, financial read/write boundaries, exports,
-   receipts, health and Proton SMTP connection. Real test email needs explicit
-   recipient authorization. Keep candidate writes isolated from live data.
-4. Pause source writes across public/private application, auth and storage paths,
-   including direct clients. Take a fresh final backup, repeat import, compare all
-   data and identity state, migrate any new receipt objects, then switch the
-   verified custom domain. A web-only maintenance banner is insufficient.
-5. Remove temporary external DB access and verify HTTPS, cookies, SMTP delivery,
-   log-in, records and exports at `amountly.app`. Preserve the source recovery pair
-   until rollback is no longer needed. Do not delete or cancel old platforms.
+Source writes are paused on 41 tables across application, private, account,
+identity, MFA and storage paths. Statement triggers reject all mutations, including
+zero-row updates and direct-client writes. The protected backup directory contains
+an explicit transactional undo script. The old Vercel/Supabase deployment and the
+isolated Render candidate are retained for recovery; nothing was cancelled or
+purged. Existing sessions were not imported, so users must sign in again.
 
-If Render has accepted user writes, preserve and reconcile them before rollback;
-changing DNS back by itself can lose valid financial activity.
+Proton SMTP authentication and certificate-verified STARTTLS succeeded from the
+live Render container using its protected deployment credentials. No real email
+was sent; delivery/inbox verification still needs an explicitly authorized test.
+
+Live HTTP checks pass for health, imported QA sign-in, Secure/HttpOnly cookies,
+withheld session tokens, account-scoped records, blocked private schema access,
+invoice PDF download and immediate session revocation.
+
+DNS is managed by Vercel. The apex A record now targets Render's documented
+`216.24.57.1`; `www` is a CNAME to `amountly.onrender.com` and redirects to the apex.
+Both domains are verified in Render. TLS issuance is pending; do not report the
+custom domain as ready until normal HTTPS and an in-app browser sign-in succeed.
+The pre-cutover DNS state and new record IDs are saved with the protected backup.
+
+Before any rollback, stop new Render writes and preserve/reconcile them. Changing
+DNS back alone can lose valid financial activity. Restore source writes only after
+reconciliation and a deliberate rollback decision.
 
 ## Separate client and ChatGPT work
 
