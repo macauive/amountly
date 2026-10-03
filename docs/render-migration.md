@@ -63,20 +63,24 @@ write pause; any new objects must be migrated before cutover.
 
 ## Render resources and remaining deployment steps
 
-The approved empty `amountly-db` PostgreSQL 17 instance is Available in Ohio:
+The approved `amountly-db` PostgreSQL 17 instance is Available in Ohio:
 0.1 CPU, 256 MB RAM, 5 GB storage, autoscaling off, $7.50/month base cost.
-Public database access remains blocked until a temporary current-IP-only import
-rule is approved and saved. Remove that rule immediately after migration.
+The user approved a temporary current-IP-only import rule, which is active.
+Remove it immediately after migration. The isolated `amountly_candidate` database
+now has all 36 application tables and nine accounts; row digests and password
+hashes match the protected source snapshot. The production database is still empty.
 [Database dashboard](https://dashboard.render.com/d/dpg-db05n4vavr4c73e8nq60-a/info).
 
-`ops/render-app.yaml` defines the full Docker app: Ohio, one 1 CPU / 2 GB instance,
+`ops/render-app.yaml` defines the full Docker app: Ohio, one 0.5 CPU / 512 MB instance,
 manual deploys, no disk, and protected environment variables. Proposed web cost
-is $25/month, for a combined $32.50/month base before usage. The web resource has
-not been submitted. Confirm this new recurring charge before creating it.
+is $7/month, approved by the user, for an Amountly subtotal of $14.50/month.
+The user also resized Drop It to $7/month. Including both databases, the
+workspace base total will be $29/month
+before usage. The web resource has not yet been submitted.
 
-Proton shows an Amountly Render token was generated, but its one-time secret
-window closed before secure capture. Resolve the token with the user; never ask
-for it in chat. No SMTP token has been deployed or live delivery verified.
+The Proton token is saved in owner-only local storage outside Git. SMTP
+authentication and certificate-verified STARTTLS succeeded for the configured
+sender. No real email has been sent and the token has not yet been deployed.
 
 Before source production mutation or domain cutover:
 

@@ -36,7 +36,11 @@ async function main() {
   try {
     await connection.query('begin')
     for (const { role, password } of credentials) {
-      const query = await connection.query("select format('alter role %I login noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls password %L', $1::text, $2::text) as sql", [role, password])
+      const existing = await connection.query('select rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls from pg_roles where rolname=$1', [role])
+      if (existing.rows.length !== 1 || Object.values(existing.rows[0]).some(Boolean)) throw new Error('Runtime role has unexpected privileges')
+      // Managed Postgres owners cannot modify superuser-only role attributes,
+      // even to false. Verify those attributes and change only login settings.
+      const query = await connection.query("select format('alter role %I login noinherit password %L', $1::text, $2::text) as sql", [role, password])
       await connection.query(query.rows[0].sql)
     }
     await connection.query('commit')

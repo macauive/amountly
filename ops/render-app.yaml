@@ -6,7 +6,7 @@ services:
     runtime: docker
     branch: codex/render-hosting
     region: ohio
-    plan: 1c-2g
+    plan: 0.5c-512mb
     numInstances: 1
     autoDeployTrigger: off
     dockerfilePath: ./Dockerfile
