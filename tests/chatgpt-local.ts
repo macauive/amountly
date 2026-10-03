@@ -110,7 +110,6 @@ async function main() {
   }
   assert.equal(list.response.status,200)
   assert.equal(list.result.result.tools.length,5)
-  for(const tool of list.result.result.tools) { assert.deepEqual(tool.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});assert.equal(tool.securitySchemes[0].scopes[0],'amountly:read') }
   const period={start:'2026-10-01',end:'2026-10-03',currency:'USD'}
   for(const [name,args] of [
     ['get_financial_review',period],['list_unpaid_invoices',{currency:'USD',overdue_only:true}],['list_upcoming_bills',{currency:'USD'}],
@@ -121,6 +120,24 @@ async function main() {
     assert.ok(!text.includes(orgs[1]));assert.ok(!text.includes('receipt_url'))
     if(name==='get_financial_review') assert.deepEqual(result.result.structuredContent.totals,{unpaid:500,obligations:75,expenses:23.5})
   }
+  // Resolve OpenAI's public client document through the actual server's CIMD
+  // extension. Only this loopback database receives the synthetic token below;
+  // OpenAI's private signing key is neither available nor needed for validation.
+  const discoveredClient='https://chatgpt.com/oauth/client.json'
+  const discoveryQuery=new URLSearchParams({client_id:discoveredClient,redirect_uri:callback,response_type:'code',scope:'amountly:read',state:'synthetic-discovery',resource,
+    code_challenge_method:'S256',code_challenge:'a'.repeat(43)})
+  assert.equal((await api('/api/auth/oauth2/authorize?'+discoveryQuery)).status,200,'actual OpenAI CIMD resolves')
+  const discovered=await db.query('select "clientDiscoveryId" from amountly_auth."oauthClient" where "clientId"=$1',[discoveredClient])
+  assert.equal(discovered.rows[0]?.clientDiscoveryId,'cimd')
+  const discoveredToken='amt_at_'+randomBytes(24).toString('base64url'), discoveredCode=createHash('sha256').update(randomBytes(24)).digest('hex')
+  await db.query('insert into amountly_auth.mcp_grants(authorization_code_id,user_id) values($1,$2)',[discoveredCode,ids[0]])
+  await db.query('insert into amountly_auth."oauthAccessToken"(token,"clientId","sessionId","userId","authorizationCodeId",resources,scopes,"expiresAt","createdAt") select $1,$2,id,$3,$4,$5::jsonb,$6::jsonb,now()+interval \'10 minutes\',now() from amountly_auth.session where "userId"=$3 order by "createdAt" desc limit 1',
+    [createHash('sha256').update(discoveredToken.slice(7)).digest('hex'),discoveredClient,ids[0],discoveredCode,JSON.stringify([resource]),JSON.stringify(['amountly:read'])])
+  const beforeDiscoveryToken=token;token=discoveredToken
+  assert.equal((await call('tools/list')).response.status,200,'initialized CIMD options validate a read-only token without refresh scope')
+  assert.equal((await call('get_financial_review',period)).result.result.isError,undefined,'discovered client reads authorized data')
+  token=beforeDiscoveryToken
+  for(const tool of list.result.result.tools) { assert.deepEqual(tool.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});assert.deepEqual(tool.securitySchemes[0].scopes,['amountly:read']) }
   assert.equal((await call('get_financial_record',{kind:'expenses',id:expenses[1]})).result.result.isError,true,'foreign ID denied')
   assert.equal((await call('summarize_expenses',{...period,user_id:ids[1]})).result.result.isError,true,'forged owner rejected')
   assert.equal((await call('get_financial_review',{...period,start:'2026-01-01'})).result.result.isError,true,'oversized period rejected')

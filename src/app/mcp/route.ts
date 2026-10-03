@@ -2,7 +2,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { mcpClient, mcpAuthError, privateHeaders } from '@/lib/chatgpt/auth'
 import { createAmountlyMcp } from '@/lib/chatgpt/tools'
 import { appOrigin } from '@/lib/platform/config'
-import { chatgptEnabled, connectionScopes } from '@/lib/chatgpt/config'
+import { chatgptEnabled, readScope } from '@/lib/chatgpt/config'
 import { AiHttpError } from '@/lib/ai/server'
 
 export const runtime = 'nodejs'
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
         const value = JSON.parse(new TextDecoder().decode(body))
         if (Array.isArray(value?.result?.tools)) {
           value.result.tools = value.result.tools.map((tool: Record<string, unknown>) => ({ ...tool,
-            securitySchemes: [{ type: 'oauth2', scopes: [...connectionScopes] }] }))
+            securitySchemes: [{ type: 'oauth2', scopes: [readScope] }] }))
           body = new TextEncoder().encode(JSON.stringify(value)).buffer
         }
       }

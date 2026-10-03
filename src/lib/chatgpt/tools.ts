@@ -4,7 +4,7 @@ import { appOrigin } from '@/lib/platform/config'
 import { periodSchema, periodFields, cents, day } from '@/lib/financial-review/contracts'
 import { loadReviewSnapshot, readActor, readSourceRecord, recordQuerySchema, reviewForClient, safeReviewFailure } from '@/lib/financial-review/service'
 import type { FinancialReview } from '@/lib/financial-review/calculate'
-import { connectionScopes } from '@/lib/chatgpt/config'
+import { readScope } from '@/lib/chatgpt/config'
 import type { ReviewClient } from '@/lib/financial-review/service'
 import { authPool } from '@/lib/platform/auth'
 
@@ -23,7 +23,7 @@ export function publicReview(review: FinancialReview) {
 
 export function createAmountlyMcp(client: ReviewClient) {
   const server = new McpServer({ name: 'amountly', version: '1.0.0' })
-  const securitySchemes = [{ type: 'oauth2', scopes: [...connectionScopes] }]
+  const securitySchemes = [{ type: 'oauth2', scopes: [readScope] }]
   const register = (name: string, title: string, description: string, schema: z.AnyZodObject,
     run: (input: Record<string, unknown>) => Promise<object>) => {
     server.registerTool(name, { title, description, inputSchema: schema, annotations,
