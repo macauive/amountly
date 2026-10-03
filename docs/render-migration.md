@@ -2,8 +2,8 @@
 
 Updated October 2, 2026. The user authorized moving Amountly web, database,
 authentication and receipts off hosted Vercel/Supabase to Render. Production
-now uses the final Render database. DNS points to Render; custom-domain TLS
-issuance is pending. Deployment branch: `codex/render-hosting`, baseline `1609b6a`.
+now runs on Render at `https://amountly.app`, including the final database,
+authentication and private receipt storage. Both custom domains have valid TLS. Deployment branch: `codex/render-hosting`, baseline `1609b6a`.
 
 ## Implemented architecture
 
@@ -41,8 +41,8 @@ No sessions were copied: existing users must sign in again after cutover.
 Verified email, banned and disabled status are preserved. Unsupported providers,
 MFA factors, or password formats make the importer fail closed.
 
-The source inventory contained no Storage objects. Recheck this at the final
-write pause; any new objects must be migrated before cutover.
+Both the rehearsal and final frozen source inventories contained no Storage
+objects; there were no existing receipt files to transfer.
 
 ## Verification completed
 
@@ -105,8 +105,10 @@ invoice PDF download and immediate session revocation.
 
 DNS is managed by Vercel. The apex A record now targets Render's documented
 `216.24.57.1`; `www` is a CNAME to `amountly.onrender.com` and redirects to the apex.
-Both domains are verified in Render. TLS issuance is pending; do not report the
-custom domain as ready until normal HTTPS and an in-app browser sign-in succeed.
+Both domains are verified and serve valid HTTPS. The `www` HTTPS redirect to the
+apex works. In-app browser QA sign-in, dashboard and invoices load at the live
+domain. Live-domain HTTP checks also pass for health, sign-in, protected records,
+PDF export, cookie security and session revocation.
 The pre-cutover DNS state and new record IDs are saved with the protected backup.
 
 Before any rollback, stop new Render writes and preserve/reconcile them. Changing
