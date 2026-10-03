@@ -48,13 +48,26 @@ tombstones. Do not restore a whole financial database to roll back app code.
 ## Verification and submission
 
 Local verification includes existing financial/security regressions, database
-security checks, five boundary tests, lint, and a Node 24 Docker build. The actual
+security checks, six boundary tests, lint, and a Node 24 Docker build. The actual
 HTTP OAuth suite passes in a 512 MB / 0.5 CPU production container, covering all
 five tools, foreign records, injection minimization, malformed input, issuer and
 resource binding, S256, code/refresh/assertion replay, account disablement,
 disconnect including late token writes, seven-day consent expiry, CSRF and
 deletion-request ownership. Browser verification checks selectable review dates
 and source records using the designated QA account.
+
+Live OpenAI discovery now finds all five tools and its latest MCP scan reports
+no issues. The Finance package metadata and skill checks pass. A regression test
+resolves OpenAI's actual public client metadata and validates a synthetic token
+through the initialized CIMD provider; the earlier fresh-options implementation
+fails that test with HTTP 401. Refresh access is optional for tool calls.
+
+The captioned walkthrough at `/review/walkthrough.mp4` contains actual production
+reviewer screens, OAuth consent, OpenAI discovery, and captured MCP responses for
+all five positive and three negative cases. Those MCP cases ran in the local
+production container using the dedicated reviewer account and an identical
+synthetic fixture; the recording labels that environment explicitly. It contains
+no simulated assistant conversations or authentication credentials.
 
 The review ZIP is built from `chatgpt-plugin/` and contains no credentials.
 Production discovery, domain verification, live tool checks, an accessible video
