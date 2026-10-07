@@ -16,7 +16,7 @@ const commands = new Set(['bill_action', 'consume_ai_quota', 'create_invoice_fro
   'seed_quarterly_estimates', 'set_own_account_type', 'set_own_preferences', 'vendor_bill_action'])
 const responseHeaders = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }
 
-export async function handle(request: Request, context: { params: Promise<{ path: string[] }> }) {
+async function handle(request: Request, context: { params: Promise<{ path: string[] }> }) {
   if (!usesRenderBackend) return Response.json({ message: 'Not found' }, { status: 404, headers: responseHeaders })
   try {
     const parts = (await context.params).path

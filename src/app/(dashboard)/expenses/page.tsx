@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { getExpenses, createExpense, updateExpense, archiveExpense, uploadReceipt, getReceiptUrl } from '@/services/expenses.service'
 import { useCreateAttempt } from '@/hooks/useCreateAttempt'
@@ -56,6 +57,7 @@ import { useDisplayDate } from '@/hooks/useDisplayDate'
 import { captureExpenseFromText, captureReceiptDocumentFromText, captureReceiptFromFile } from '@/lib/expense-ai'
 import { supportedReceiptCurrencies, type ReceiptFileCaptureResult } from '@/lib/ai/receipt-contract'
 import { expenseTotalsByCurrency, findPossibleReceiptDuplicate, isSupportedReceiptCurrency, receiptDraftIsComplete, receiptExpenseFields } from '@/lib/receipt-review'
+import { expenseNavigation, filterExpenseList, validExpenseFilterDate } from '@/lib/expense-navigation'
 
 function formatExpenseAmount(amount: number, currency: string) {
   if (!Number.isFinite(amount)) return 'Amount unavailable'
@@ -91,8 +93,29 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 export default function ExpensesPage() {
+  const { user } = useAuth()
+  // A new ownership boundary gets a fresh editor, including uncertain saves.
+  return <ExpensesWorkspace key={`${user?.id ?? 'signed-out'}:${user?.organization_id ?? ''}`} />
+}
+
+function ExpensesWorkspace() {
   const formatDateOnly = useDisplayDate()
   const { user } = useAuth()
+  const router = useRouter()
+  const queryString = useSearchParams()?.toString() ?? ''
+  const navigation = expenseNavigation(new URLSearchParams(queryString))
+  const [search, setSearch] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState(navigation.status)
+  const [linkError, setLinkError] = useState<string | null>(null)
+  const handledLink = useRef<string | null>(null)
+  const receiptInput = useRef<HTMLInputElement>(null)
+  const focusReceipt = useRef(false)
+  const loadVersion = useRef(0)
+  const loadedScope = useRef<string | null>(null)
+  const mounted = useRef(true)
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
@@ -100,6 +123,7 @@ export default function ExpensesPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null)
+  const [archiveTarget, setArchiveTarget] = useState<Expense | null>(null)
   const [historyId,setHistoryId]=useState<string|null>(null)
   const [saving, setSaving] = useState(false)
   const [smartCaptureText, setSmartCaptureText] = useState('')
@@ -126,10 +150,24 @@ export default function ExpensesPage() {
     notes: '',
   })
 
+  // Establish liveness before starting data loads, including StrictMode replay.
   useEffect(() => {
-    if (user) loadData()
+    mounted.current = true
+    return () => { mounted.current = false; loadVersion.current++; extraction.current.controller?.abort() }
+  }, [])
+
+  useEffect(() => {
+    loadedScope.current = null
+    setExpenses([])
+    setProjects([])
+    setDialogOpen(false)
+    cancelExtraction()
+    setLoading(true)
+    if (user) void loadData()
+    return () => { loadVersion.current++ }
   }, [user?.id, user?.organization_id])
 
+  useEffect(() => { setStatusFilter(navigation.status) }, [navigation.status])
   useEffect(() => {
     if (!dialogOpen || !receiptFile || !['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(receiptFile.type)) {
       setReceiptPreviewUrl(null)
@@ -140,9 +178,11 @@ export default function ExpensesPage() {
     return () => URL.revokeObjectURL(url)
   }, [dialogOpen, receiptFile])
 
-  useEffect(() => () => { extraction.current.controller?.abort() }, [])
-
   const loadData = async () => {
+    if (!mounted.current) return
+    const version = ++loadVersion.current
+    const scope = user ? `${user.id}:${user.organization_id ?? ''}` : null
+    if (!scope) return
     try {
       setError(null)
       const [expensesData, projectsData] = await Promise.all([
@@ -152,14 +192,17 @@ export default function ExpensesPage() {
           organizationId: user?.organization_id,
         }),
       ])
+      if (version !== loadVersion.current) return
+      loadedScope.current = scope
       setExpenses(expensesData)
       setProjects(projectsData)
     } catch (err) {
+      if (version !== loadVersion.current) return
       const errorMessage = err instanceof Error ? err.message : 'Failed to load data'
       setError(errorMessage)
       toast.error(errorMessage)
     } finally {
-      setLoading(false)
+      if (version === loadVersion.current) setLoading(false)
     }
   }
 
@@ -194,6 +237,7 @@ export default function ExpensesPage() {
   }
   const closeExpenseDialog = () => {
     cancelExtraction()
+    focusReceipt.current = false
     setDialogOpen(false)
   }
   const beginExtraction = (kind: NonNullable<typeof extracting>) => {
@@ -203,6 +247,7 @@ export default function ExpensesPage() {
     setExtracting(kind)
     return current
   }
+  const readOnlyExpense = !!selectedExpense && (selectedExpense.user_id !== user?.id || !['DRAFT', 'REJECTED'].includes(selectedExpense.status))
   const extractionIsCurrent = (current: { version: number; controller: AbortController }) =>
     extraction.current.version === current.version && !current.controller.signal.aborted
   const finishExtraction = (current: { version: number; controller: AbortController }) => {
@@ -258,9 +303,39 @@ export default function ExpensesPage() {
     setDialogOpen(true)
   }
 
+  useEffect(() => {
+    if (loading || error || !user || loadedScope.current !== `${user.id}:${user.organization_id ?? ''}`) return
+    const key = `${user.id}:${queryString}`
+    if (handledLink.current === key) return
+    handledLink.current = key
+    if (navigation.invalid) {
+      setLinkError('This expense link is invalid. Choose an expense from the list.')
+      return
+    }
+    if (navigation.expenseId || navigation.uploadReceipt) {
+      setLinkError(null)
+      // Navigation cannot replace an in-flight or uncertain save.
+      if (saving || createAttempt.unknown || dialogOpen) {
+        setLinkError('Finish or close the current expense before opening another.')
+      } else if (navigation.uploadReceipt) {
+        focusReceipt.current = true
+        openCreateDialog()
+      } else {
+        const expense = expenses.find(row => row.id.toLowerCase() === navigation.expenseId)
+        if (expense) openEditDialog(expense)
+        else setLinkError('This expense is unavailable. Choose an expense from the list.')
+      }
+      const params = new URLSearchParams(queryString)
+      params.delete('expense')
+      params.delete('action')
+      const status = expenseNavigation(params).status
+      router.replace(status === 'all' ? '/expenses' : `/expenses?status=${encodeURIComponent(status)}`, { scroll: false })
+    }
+  }, [queryString, loading, error, user?.id, user?.organization_id, expenses])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (saving || extraction.current.controller) return
+    if (saving || readOnlyExpense || extraction.current.controller) return
     if (!createAttempt.unknown && receiptFileResult && !receiptReviewed) {
       toast.error('Review the extracted receipt and confirm the details before saving.')
       return
@@ -279,6 +354,7 @@ export default function ExpensesPage() {
       if (receiptFile && uploadedReceipt.current?.file !== receiptFile) {
         uploadedReceipt.current = { file: receiptFile, path: await uploadReceipt(receiptFile) }
       }
+      if (!mounted.current) return
       const receiptPath = receiptFile ? uploadedReceipt.current?.path : selectedExpense?.receipt_path
       const expenseData = {
         user_id: user?.id!,
@@ -296,30 +372,35 @@ export default function ExpensesPage() {
 
       if (selectedExpense) {
         await updateExpense(selectedExpense.id, expenseData, selectedExpense.updated_at)
+        if (!mounted.current) return
         toast.success('Expense updated')
       } else {
         await createAttempt.run(expenseData, createExpense)
+        if (!mounted.current) return
         toast.success('Expense created')
       }
       closeExpenseDialog()
       loadData()
     } catch (error) {
+      if (!mounted.current) return
       toast.error(error instanceof Error ? error.message : 'Could not confirm the save. Review the expense before trying again.')
     } finally {
-      setSaving(false)
+      if (mounted.current) setSaving(false)
     }
   }
 
   const handleDelete = async () => {
-    if (!selectedExpense) return
+    if (!archiveTarget) return
 
     try {
-      await archiveExpense(selectedExpense.id, selectedExpense.updated_at)
+      await archiveExpense(archiveTarget.id, archiveTarget.updated_at)
+      if (!mounted.current) return
       toast.success('Expense archived; history preserved')
       setDeleteDialogOpen(false)
-      setSelectedExpense(null)
+      setArchiveTarget(null)
       loadData()
     } catch (error) {
+      if (!mounted.current) return
       toast.error(getErrorMessage(error, 'Failed to delete expense'))
     }
   }
@@ -415,6 +496,9 @@ export default function ExpensesPage() {
 
   const possibleReceiptDuplicate = receiptFileResult
     ? findPossibleReceiptDuplicate(formData, expenses.filter(expense => expense.user_id === user?.id), selectedExpense?.id) : undefined
+  const filteredExpenses = filterExpenseList(expenses, { query: search, start: startDate, end: endDate, category: categoryFilter, status: statusFilter })
+  const invalidDateRange = (!!startDate && !validExpenseFilterDate(startDate)) || (!!endDate && !validExpenseFilterDate(endDate)) || (!!startDate && !!endDate && startDate > endDate)
+  const clearFilters = () => { setSearch(''); setStartDate(''); setEndDate(''); setCategoryFilter('all'); setStatusFilter('all'); setLinkError(null); router.replace('/expenses', { scroll: false }) }
 
   if (loading) {
     return (
@@ -443,7 +527,7 @@ export default function ExpensesPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-wrap gap-3 justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold">Expenses</h1>
           <p className="text-muted-foreground">Track and manage your expenses</p>
@@ -455,6 +539,7 @@ export default function ExpensesPage() {
       </div>
 
       {/* Summary Cards */}
+      {linkError && <p className="text-sm text-destructive" role="alert">{linkError}</p>}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardHeader className="pb-2">
@@ -486,6 +571,21 @@ export default function ExpensesPage() {
         </Card>
       </div>
 
+      <Card>
+        <CardHeader><CardTitle className="text-base">Find expenses</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="space-y-1"><Label htmlFor="expense_search">Merchant or description</Label><Input id="expense_search" maxLength={100} value={search} onChange={e => setSearch(e.target.value.slice(0, 100))} placeholder="Search expenses" /></div>
+            <div className="space-y-1"><Label htmlFor="expense_start">From</Label><Input id="expense_start" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></div>
+            <div className="space-y-1"><Label htmlFor="expense_end">Through</Label><Input id="expense_end" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} /></div>
+            <div className="space-y-1"><Label htmlFor="expense_category_filter">Category</Label><Select value={categoryFilter} onValueChange={setCategoryFilter}><SelectTrigger id="expense_category_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All categories</SelectItem>{Object.entries(expenseCategoryLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+            <div className="space-y-1"><Label htmlFor="expense_status_filter">Status</Label><Select value={statusFilter} onValueChange={value => { setStatusFilter(value); router.replace(value === 'all' ? '/expenses' : `/expenses?status=${encodeURIComponent(value)}`, { scroll: false }) }}><SelectTrigger id="expense_status_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem>{Object.entries(expenseStatusLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm text-muted-foreground" role="status">Showing {filteredExpenses.length} of {expenses.length} expenses. Summary totals include all expenses.</p><Button variant="ghost" size="sm" onClick={clearFilters}>Clear filters</Button></div>
+          {invalidDateRange && <p className="text-sm text-destructive" role="alert">Choose valid dates with the end on or after the start.</p>}
+        </CardContent>
+      </Card>
+
       {expenses.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">
@@ -503,7 +603,7 @@ export default function ExpensesPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Receipt className="w-5 h-5" />
-              All Expenses
+              Expenses
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -520,7 +620,8 @@ export default function ExpensesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {expenses.map((expense) => (
+                {filteredExpenses.length === 0 && <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No expenses match these filters.</TableCell></TableRow>}
+                {filteredExpenses.map((expense) => (
                   <TableRow key={expense.id}>
                     <TableCell>
                       {formatDateOnly(expense.expense_date)}
@@ -553,7 +654,7 @@ export default function ExpensesPage() {
                         size="icon"
                         onClick={() => openEditDialog(expense)}
                         aria-label="Edit expense"
-                        disabled={!['DRAFT','REJECTED'].includes(expense.status)}
+                        disabled={expense.user_id !== user?.id || !['DRAFT','REJECTED'].includes(expense.status)}
                       >
                         <Pencil className="w-4 h-4" />
                       </Button>
@@ -561,9 +662,9 @@ export default function ExpensesPage() {
                         variant="ghost"
                         size="icon"
                         aria-label="Archive expense"
-                        disabled={!['DRAFT','REJECTED'].includes(expense.status)}
+                        disabled={expense.user_id !== user?.id || !['DRAFT','REJECTED'].includes(expense.status)}
                         onClick={() => {
-                          setSelectedExpense(expense)
+                          setArchiveTarget(expense)
                           setDeleteDialogOpen(true)
                         }}
                       >
@@ -580,18 +681,28 @@ export default function ExpensesPage() {
 
       {/* Create/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={open => { if (!saving) { if (open) setDialogOpen(true); else closeExpenseDialog() } }}>
-        <DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto">
+        <DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto" onOpenAutoFocus={event => {
+          if (focusReceipt.current && receiptInput.current) {
+            event.preventDefault()
+            focusReceipt.current = false
+            receiptInput.current.focus()
+          }
+        }}>
           <DialogHeader>
             <DialogTitle>
-              {selectedExpense ? 'Edit Expense' : 'Add Expense'}
+              {selectedExpense ? readOnlyExpense ? 'Expense details' : 'Edit Expense' : 'Add Expense'}
             </DialogTitle>
             <DialogDescription>
-              {selectedExpense ? 'Update expense details' : 'Record a new expense'}
+              {selectedExpense ? readOnlyExpense ? 'View the recorded expense. This record cannot be edited.' : 'Update expense details' : 'Record a new expense'}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit}>
             <SaveAttemptNotice message={createAttempt.message} />
-            <fieldset disabled={saving || createAttempt.unknown} className="grid gap-4 py-4">
+            {selectedExpense && (selectedExpense.receipt_path || selectedExpense.receipt_url) && <Button type="button" variant="outline" onClick={async () => {
+              try { const url = await getReceiptUrl(selectedExpense); if (mounted.current) window.open(url, '_blank', 'noopener,noreferrer') }
+              catch { if (mounted.current) toast.error('Could not open receipt. Check your access and try again.') }
+            }}>Open saved receipt</Button>}
+            <fieldset disabled={saving || createAttempt.unknown || readOnlyExpense} className="grid gap-4 py-4">
               {!selectedExpense && (
                 <div className="rounded-lg border bg-primary/5 p-3">
                   <div className="mb-3 flex items-start gap-3">
@@ -652,6 +763,7 @@ export default function ExpensesPage() {
                     <Label htmlFor="receipt_file">Receipt file</Label>
                     <Input
                       key={receiptFileInputKey}
+                      ref={receiptInput}
                       id="receipt_file"
                       type="file"
                       accept="image/jpeg,image/png,image/webp,application/pdf"
@@ -831,19 +943,19 @@ export default function ExpensesPage() {
             </fieldset>
             <DialogFooter>
               <Button type="button" variant="outline" disabled={saving} onClick={() => { closeExpenseDialog(); if (createAttempt.unknown) void loadData() }}>
-                {createAttempt.unknown ? 'Close and review list' : 'Cancel'}
+                {readOnlyExpense ? 'Close' : createAttempt.unknown ? 'Close and review list' : 'Cancel'}
               </Button>
-              <Button type="submit" disabled={saving || !!extracting || (!createAttempt.unknown && !!receiptFileResult && !receiptReviewed)}>
+              {!readOnlyExpense && <Button type="submit" disabled={saving || !!extracting || (!createAttempt.unknown && !!receiptFileResult && !receiptReviewed)}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {createAttempt.unknown ? 'Retry original save' : selectedExpense ? 'Save Changes' : 'Add Expense'}
-              </Button>
+              </Button>}
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
       {/* Delete Confirmation */}
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <AlertDialog open={deleteDialogOpen} onOpenChange={open => { setDeleteDialogOpen(open); if (!open) setArchiveTarget(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Archive Expense</AlertDialogTitle>

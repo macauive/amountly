@@ -22,6 +22,7 @@
     "test:capture": "node --test tests/capture.test.cjs",
     "test:receipts": "node --test tests/receipt-api.test.cjs tests/receipt-file.test.cjs tests/receipt-review.test.cjs",
     "test:receipts:render": "node --import tsx tests/receipt-render-local.ts",
+    "test:expense-workflow": "node --test tests/expense-navigation.test.cjs tests/expense-workflow-navigation.test.cjs tests/solo-onboarding.test.cjs",
     "test:financial-review": "node --test tests/financial-review.test.cjs tests/financial-review-api.test.cjs",
     "test:financial-review:local": "node tests/financial-review-local.cjs",
     "test:chatgpt": "node --test tests/chatgpt.test.cjs",

@@ -3,6 +3,7 @@
 import { format } from 'date-fns'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAppState } from '@/contexts/AppStateContext'
 import { getBills } from '@/services/bills.service'
@@ -41,6 +42,7 @@ import {
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { getQuickActions } from '@/lib/quick-actions'
+import { expenseHref } from '@/lib/expense-navigation'
 import { getDashboardAiInsights } from '@/lib/dashboard-ai'
 import { addDays, differenceInCalendarDays, endOfMonth, formatDistanceToNow, isAfter, isBefore, parseISO, startOfMonth } from 'date-fns'
 
@@ -54,6 +56,7 @@ type DashboardStat = {
 
 type RecentActivity = {
   id: string
+  href: string
   message: string
   time: string
   status: 'success' | 'warning'
@@ -274,9 +277,10 @@ function getWorkStats(accountType: AccountType, data: WorkDashboardData): Dashbo
   ]
 }
 
-function getRecentPersonalActivity(bills: Bill[], expenses: Expense[]): RecentActivity[] {
+function getRecentActivity(bills: Bill[], expenses: Expense[]): RecentActivity[] {
   const billActivities = bills.map((bill) => ({
     id: `bill-${bill.id}`,
+    href: '/bills',
     message: `${bill.status === BillStatus.paid ? 'Paid' : 'Added'} bill: ${bill.name}`,
     time: formatDistanceToNow(parseISO(bill.updated_at || bill.created_at), { addSuffix: true }),
     status: bill.status === BillStatus.overdue ? 'warning' as const : 'success' as const,
@@ -285,6 +289,7 @@ function getRecentPersonalActivity(bills: Bill[], expenses: Expense[]): RecentAc
 
   const expenseActivities = expenses.map((expense) => ({
     id: `expense-${expense.id}`,
+    href: expenseHref(expense.id),
     message: `Recorded expense: ${expense.merchant || expense.description || 'Expense'}`,
     time: formatDistanceToNow(parseISO(expense.updated_at || expense.created_at), { addSuffix: true }),
     status: expense.status === ExpenseStatus.rejected ? 'warning' as const : 'success' as const,
@@ -953,8 +958,8 @@ export default function DashboardPage() {
 
   const recentActivities =
     accountType === AccountType.personal
-      ? getRecentPersonalActivity(personalBills, personalExpenses)
-      : []
+      ? getRecentActivity(personalBills, personalExpenses)
+      : getRecentActivity([], workDashboardData.expenses)
   const localNextSteps =
     accountType === AccountType.personal
       ? getPersonalNextSteps(personalBills, personalExpenses)
@@ -1058,7 +1063,7 @@ export default function DashboardPage() {
       {accountType !== AccountType.personal && <Card><CardHeader><CardTitle>Needs attention</CardTitle></CardHeader><CardContent className="flex flex-wrap gap-3">
         <Button variant="outline" onClick={() => router.push('/invoices')}>{workDashboardData.invoices.filter(i => i.status === InvoiceStatus.overdue).length} overdue invoices</Button>
         <Button variant="outline" onClick={() => router.push('/invoices')}>{workDashboardData.invoices.filter(i => i.status === InvoiceStatus.draft).length} invoice drafts</Button>
-        <Button variant="outline" onClick={() => router.push('/expenses')}>{workDashboardData.expenses.filter(e => e.status === ExpenseStatus.draft).length} expense drafts to review</Button>
+        <Button variant="outline" asChild><Link href="/expenses?status=DRAFT">{workDashboardData.expenses.filter(e => e.status === ExpenseStatus.draft).length} expense drafts to review</Link></Button>
       </CardContent></Card>}
       <Card>
         <CardHeader>
@@ -1153,9 +1158,9 @@ export default function DashboardPage() {
         <CardContent>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {quickActions.map((action) => (
-              <button
+              <Link
                 key={action.id}
-                onClick={() => router.push(action.href)}
+                href={action.href}
                 className={`p-4 rounded-lg border transition-all duration-200 hover:shadow-md text-left ${action.cardBg}`}
               >
                 <div className="flex items-start justify-between mb-2">
@@ -1163,7 +1168,7 @@ export default function DashboardPage() {
                 </div>
                 <h3 className="font-medium mb-1">{action.label}</h3>
                 <p className="text-sm opacity-80">{action.description}</p>
-              </button>
+              </Link>
             ))}
           </div>
         </CardContent>
@@ -1229,13 +1234,13 @@ export default function DashboardPage() {
           <CardContent>
             <div className="space-y-4">
               {recentActivities.length > 0 ? recentActivities.map((activity) => (
-                <div key={activity.id} className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
+                <Link key={activity.id} href={activity.href} className="flex items-start gap-3 p-3 rounded-lg bg-muted/50 transition-colors hover:bg-accent">
                   {getStatusIcon(activity.status)}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm">{activity.message}</p>
                     <p className="text-xs text-muted-foreground mt-1">{activity.time}</p>
                   </div>
-                </div>
+                </Link>
               )) : (
                 <p className="text-sm text-muted-foreground">No recent activity yet</p>
               )}

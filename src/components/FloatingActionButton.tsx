@@ -70,7 +70,7 @@ export function FloatingActionButton({ onAction }: FloatingActionButtonProps) {
 
       {/* Mobile Sheet */}
       <div className="fixed bottom-6 right-6 z-50 md:hidden">
-        <Sheet>
+        <Sheet open={isOpen} onOpenChange={setIsOpen}>
           <SheetTrigger asChild>
             <Button
               size="lg"

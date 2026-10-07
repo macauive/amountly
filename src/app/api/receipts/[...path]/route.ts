@@ -15,7 +15,7 @@ function matches(bytes: Buffer, type: string) {
   if (type === 'image/png') return bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
   return bytes.subarray(0,4).toString() === 'RIFF' && bytes.subarray(8,12).toString() === 'WEBP'
 }
-export async function handle(request: Request, context: { params: Promise<{ path: string[] }> }) {
+async function handle(request: Request, context: { params: Promise<{ path: string[] }> }) {
   if (!usesRenderBackend) return Response.json({ error: 'Not found' }, { status: 404, headers })
   let connection
   try {

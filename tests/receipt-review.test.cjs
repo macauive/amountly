@@ -72,8 +72,10 @@ test('file client sends bytes without filename, supports cookie sessions, and va
 
 // A small hook host renders the actual page and exercises its event handlers.
 // Database/network calls are replaced; no credentials, live AI, or customer data.
-async function expenseForm(capture, initialExpenses = []) {
-  const slots = [], effects = [], uploads = [], saved = [], errors = []
+async function expenseForm(capture, initialExpenses = [], options = {}) {
+  const slots = [], effects = [], uploads = [], saved = [], updated = [], errors = [], reads = []
+  const auth = { user: { id: 'synthetic-owner' } }
+  const navigation = { query: options.query ?? '', replacements: [] }
   let index = 0
   const overrides = {
     react: {
@@ -82,17 +84,18 @@ async function expenseForm(capture, initialExpenses = []) {
       useEffect(effect, deps) {
         const i = index++, previous = slots[i]
         if (!previous || deps.some((value, j) => value !== previous.deps[j])) effects.push(() => {
-          previous?.cleanup?.(); slots[i] = { effect: true, deps, cleanup: effect() }
+          previous?.cleanup?.(); slots[i] = { effect: true, deps, setup: effect, cleanup: effect() }
         })
       },
     },
-    '@/contexts/AuthContext': { useAuth: () => ({ user: { id: 'synthetic-owner' } }) },
+    '@/contexts/AuthContext': { useAuth: () => auth },
+    'next/navigation': { useRouter: () => ({ replace: href => { navigation.replacements.push(href); navigation.query = href.split('?')[1] ?? '' } }), useSearchParams: () => new URLSearchParams(navigation.query) },
     '@/hooks/useDisplayDate': { useDisplayDate: () => value => value.slice(0, 10) },
-    '@/hooks/useCreateAttempt': { useCreateAttempt: () => ({ reset: () => true, unknown: false, message: null, run: (input, save) => save(input, 'synthetic-request') }) },
+    '@/hooks/useCreateAttempt': { useCreateAttempt: () => ({ reset: () => !options.unknown, unknown: !!options.unknown, message: null, run: (input, save) => save(input, 'synthetic-request') }) },
     '@/services/expenses.service': {
-      getExpenses: async () => initialExpenses, getReceiptUrl: async () => '', archiveExpense: async () => {}, updateExpense: async () => {},
+      getExpenses: async () => { reads.push(auth.user.id); return options.loadExpenses ? options.loadExpenses(auth.user.id) : initialExpenses }, getReceiptUrl: async () => '', archiveExpense: async () => {}, updateExpense: async (...input) => { updated.push(input) },
       uploadReceipt: async selected => { uploads.push(selected); return 'synthetic-owner/receipt.png' },
-      createExpense: async input => { saved.push(input); return input },
+      createExpense: async input => { saved.push(input); return options.saveExpense ? options.saveExpense(input) : input },
     },
     '@/services/projects.service': { getProjects: async () => [] },
     '@/lib/expense-ai': { captureReceiptFromFile: capture, captureExpenseFromText: async () => receipt, captureReceiptDocumentFromText: async () => receipt },
@@ -109,7 +112,17 @@ async function expenseForm(capture, initialExpenses = []) {
   })) overrides[`@/components/ui/${module}`] = Object.fromEntries(names.map(name => [name, name]))
   const Page = loadApp(overrides)('src/app/(dashboard)/expenses/page.tsx').default
   let tree
-  const render = () => { index = 0; tree = Page(); while (effects.length) effects.shift()(); return tree }
+  let workspaceKey
+  const render = () => {
+    index = 0; tree = Page()
+    if (workspaceKey !== tree.key) {
+      for (const slot of slots) if (slot?.effect) slot.cleanup?.()
+      slots.length = 0; effects.length = 0; workspaceKey = tree.key
+    }
+    while (typeof tree?.type === 'function') tree = tree.type(tree.props)
+    while (effects.length) effects.shift()()
+    return tree
+  }
   function nodes(value, predicate) {
     if (Array.isArray(value)) return value.flatMap(child => nodes(child, predicate))
     if (!value || typeof value !== 'object' || !value.props) return []
@@ -122,9 +135,17 @@ async function expenseForm(capture, initialExpenses = []) {
   const find = predicate => { const result = nodes(tree, predicate)[0]; assert.ok(result, 'control exists'); return result.props }
   const button = label => find(node => node.type === 'Button' && text(node) === label)
   const field = id => find(node => node.props.id === id)
-  render(); await new Promise(setImmediate); render()
-  button('Add Expense').onClick(); render()
-  const host = { render, button, field, find, uploads, saved, errors,
+  render()
+  if (options.strictReplay) {
+    for (const slot of slots) if (slot?.effect) slot.cleanup?.()
+    for (const slot of slots) if (slot?.effect) slot.cleanup = slot.setup()
+  }
+  await new Promise(setImmediate); render()
+  if (options.autoOpen !== false) { button('Add Expense').onClick(); render() }
+  else { render(); render() }
+  const host = { render, button, field, find, uploads, saved, updated, errors, reads, navigation, text: () => text(tree),
+    async switchUser(id) { auth.user = { id }; render(); await new Promise(setImmediate); render(); render() },
+    navigate(query) { navigation.query = query; render(); render() },
     selectFile(selected = file()) { field('receipt_file').onChange({ target: { files: [selected] } }); render() },
     currency: () => find(node => node.type === 'Select' && node.props.name === 'expense_currency'),
     submit: () => find(node => node.type === 'form').onSubmit({ preventDefault() {} }),
@@ -133,6 +154,90 @@ async function expenseForm(capture, initialExpenses = []) {
   }
   return host
 }
+
+test('StrictMode cleanup and setup replay still loads authorized expenses and opens the intended record', async () => {
+  const id = '00000000-0000-4000-8000-000000000015'
+  const row = { ...receipt, id, user_id: 'synthetic-owner', status: 'DRAFT', amount: 12.48 }
+  const host = await expenseForm(async () => receipt, [row], { query: `expense=${id}`, autoOpen: false, strictReplay: true })
+  assert.deepEqual(host.reads, ['synthetic-owner', 'synthetic-owner'])
+  assert.equal(host.find(node => node.type === 'Dialog').open, true)
+  assert.equal(host.field('merchant').value, receipt.merchant)
+  assert.equal(host.text().includes('Loading expenses'), false)
+  host.dispose()
+})
+
+test('receipt entry opens once, consumes its URL intent, and can be reopened without saving', async () => {
+  const host = await expenseForm(async () => receipt, [], { query: 'action=upload-receipt', autoOpen: false })
+  assert.equal(host.find(node => node.type === 'Dialog').open, true)
+  assert.deepEqual(host.navigation.replacements, ['/expenses'])
+  host.close(); host.render()
+  assert.equal(host.find(node => node.type === 'Dialog').open, false)
+  host.navigate('action=upload-receipt')
+  assert.equal(host.find(node => node.type === 'Dialog').open, true)
+  assert.equal(host.saved.length, 0)
+  assert.equal(host.uploads.length, 0)
+  host.dispose()
+})
+
+test('expense deep links resolve only loaded authorized rows; finalized records cannot submit edits', async () => {
+  const id = '00000000-0000-4000-8000-000000000012'
+  const row = { ...receipt, id, user_id: 'synthetic-owner', status: 'APPROVED', amount: 12.48 }
+  const host = await expenseForm(async () => receipt, [row], { query: `expense=${id}`, autoOpen: false })
+  assert.equal(host.find(node => node.type === 'Dialog').open, true)
+  assert.match(host.text(), /Expense details/)
+  assert.equal(host.find(node => node.type === 'fieldset').disabled, true)
+  await host.submit()
+  assert.equal(host.saved.length, 0)
+  host.close()
+  host.navigate('expense=00000000-0000-4000-8000-000000000013')
+  assert.equal(host.find(node => node.type === 'Dialog').open, false)
+  assert.match(host.text(), /This expense is unavailable/)
+  host.dispose()
+})
+
+test('navigation cannot reset an uncertain save or overwrite an already open edited draft', async () => {
+  const host = await expenseForm(async () => receipt)
+  host.field('amount').onChange({ target: { value: '99.00' } }); host.render()
+  host.navigate('action=upload-receipt')
+  assert.equal(host.field('amount').value, '99.00')
+  assert.match(host.text(), /Finish or close the current expense/)
+  host.dispose()
+  const unknown = await expenseForm(async () => receipt, [], { query: 'action=upload-receipt', autoOpen: false, unknown: true })
+  assert.equal(unknown.find(node => node.type === 'Dialog').open, false)
+  assert.match(unknown.text(), /Finish or close the current expense/)
+  assert.equal(unknown.saved.length, 0)
+  unknown.dispose()
+})
+
+test('an account switch clears the editor and late saves cannot reload the previous account', async () => {
+  let finishSave
+  const pending = new Promise(resolve => { finishSave = resolve })
+  const host = await expenseForm(async () => receipt, [], { saveExpense: () => pending, loadExpenses: () => [] })
+  host.field('amount').onChange({ target: { value: '99.00' } }); host.render()
+  const submission = host.submit(); host.render()
+  await host.switchUser('synthetic-other-owner')
+  assert.equal(host.find(node => node.type === 'Dialog').open, false)
+  assert.equal(host.field('amount').value, '')
+  finishSave({}); await submission; host.render()
+  assert.deepEqual(host.reads, ['synthetic-owner', 'synthetic-other-owner'])
+  assert.equal(host.saved[0].user_id, 'synthetic-owner')
+  host.dispose()
+})
+
+test('choosing and cancelling an archive target cannot turn an uncertain create into an update', async () => {
+  const options = {}
+  const row = { ...receipt, id: '00000000-0000-4000-8000-000000000014', user_id: 'synthetic-owner', status: 'DRAFT', amount: 12.48 }
+  const host = await expenseForm(async () => receipt, [row], options)
+  host.field('amount').onChange({ target: { value: '99.00' } }); host.render()
+  options.unknown = true; host.render(); host.close()
+  host.find(node => node.props['aria-label'] === 'Archive expense').onClick(); host.render()
+  host.find(node => node.type === 'AlertDialog').onOpenChange(false); host.render()
+  host.button('Add Expense').onClick(); host.render()
+  await host.submit()
+  assert.equal(host.updated.length, 0)
+  assert.equal(host.saved.length, 1)
+  host.dispose()
+})
 
 test('receipt read never saves or attaches; confirmation is required and currency is preserved on save', async () => {
   const host = await expenseForm(async () => ({ ...receipt, currency: 'EUR' }))

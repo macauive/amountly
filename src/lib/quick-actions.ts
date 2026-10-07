@@ -1,5 +1,6 @@
 import { CreditCard, Clock, FileText, Receipt, DollarSign } from 'lucide-react'
 import { AccountType } from '@/types/enums'
+import { receiptUploadHref } from '@/lib/expense-navigation'
 
 export interface QuickAction {
   id: string
@@ -64,7 +65,20 @@ const personalActions: QuickAction[] = [
   },
 ]
 
+const uploadReceiptAction: QuickAction = {
+  id: 'add-expense',
+  label: 'Upload a receipt',
+  description: 'Review a captured expense draft',
+  icon: Receipt,
+  href: receiptUploadHref,
+  bg: 'bg-green-700',
+  iconColor: 'text-green-100',
+  cardBg: 'bg-green-50 hover:bg-green-100 dark:bg-green-950 dark:hover:bg-green-900',
+  cardIconColor: 'text-green-600 dark:text-green-400',
+}
+
 const freelancerActions: QuickAction[] = [
+  uploadReceiptAction,
   {
     id: 'log-time',
     label: 'Log Time',
@@ -88,17 +102,6 @@ const freelancerActions: QuickAction[] = [
     cardIconColor: 'text-blue-600 dark:text-blue-400',
   },
   {
-    id: 'add-expense',
-    label: 'Add Expense',
-    description: 'Record an expense',
-    icon: Receipt,
-    href: '/expenses',
-    bg: 'bg-green-700',
-    iconColor: 'text-green-100',
-    cardBg: 'bg-green-50 hover:bg-green-100 dark:bg-green-950 dark:hover:bg-green-900',
-    cardIconColor: 'text-green-600 dark:text-green-400',
-  },
-  {
     id: 'record-payment',
     label: 'Record Payment',
     description: 'Log a payment received',
@@ -112,6 +115,7 @@ const freelancerActions: QuickAction[] = [
 ]
 
 const businessActions: QuickAction[] = [
+  uploadReceiptAction,
   {
     id: 'create-invoice',
     label: 'Create Invoice',
@@ -133,17 +137,6 @@ const businessActions: QuickAction[] = [
     iconColor: 'text-indigo-100',
     cardBg: 'bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900',
     cardIconColor: 'text-indigo-600 dark:text-indigo-400',
-  },
-  {
-    id: 'add-expense',
-    label: 'Add Expense',
-    description: 'Record an expense',
-    icon: Receipt,
-    href: '/expenses',
-    bg: 'bg-green-700',
-    iconColor: 'text-green-100',
-    cardBg: 'bg-green-50 hover:bg-green-100 dark:bg-green-950 dark:hover:bg-green-900',
-    cardIconColor: 'text-green-600 dark:text-green-400',
   },
   {
     id: 'record-payment',

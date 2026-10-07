@@ -1,147 +1,113 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { AccountType, accountTypeLabels } from '@/types/enums'
+import { AccountType } from '@/types/enums'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { User, Briefcase, Building2, Loader2, Check } from 'lucide-react'
-import { cn } from '@/components/ui/utils'
+import { Briefcase, Loader2, Check } from 'lucide-react'
 
-const accountTypeOptions = [
-  {
-    type: AccountType.personal,
-    icon: User,
-    title: accountTypeLabels[AccountType.personal],
-    description: 'Track household bills, personal spending, and tax-ready records without accounting jargon.',
-    features: ['Bill tracking', 'Expense categories', 'Tax-ready exports'],
-  },
-  {
-    type: AccountType.freelancer,
-    icon: Briefcase,
-    title: accountTypeLabels[AccountType.freelancer],
-    description: 'Manage client work from time tracking through invoices, expenses, and simple tax prep.',
-    features: ['Time tracking', 'Clients & projects', 'Professional invoicing', 'AI-guided next steps'],
-  },
-  {
-    type: AccountType.business,
-    icon: Building2,
-    title: accountTypeLabels[AccountType.business],
-    description: 'Run day-to-day money operations for a small service business with a clean accounting workspace.',
-    features: ['Invoices & bills', 'Expenses', 'Clients & projects', 'Cashflow overview'],
-  },
-]
+const setupError = 'Could not finish setting up your account. Please try again.'
 
 export default function AccountTypeSelectionPage() {
   const router = useRouter()
-  const { setAccountType, isAuthenticated, isLoading, recoveryPath, session } = useAuth()
-  
+  const { setAccountType, isAuthenticated, isLoading, recoveryPath, session, user } = useAuth()
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submitted = useRef(false)
+  const existingAccountType = user?.account_type
+  const needsBusinessRecovery = existingAccountType === AccountType.business && !user?.organization_id
+  const canSetUp = !isLoading && Boolean(session) && !isAuthenticated && !existingAccountType
+    && recoveryPath === '/account-type'
+
   useEffect(() => {
     if (isLoading) return
-
     if (!session) {
       router.replace('/login')
-      return
-    }
-
-    if (isAuthenticated) {
+    } else if (needsBusinessRecovery || recoveryPath === '/onboarding') {
+      router.replace('/onboarding')
+    } else if (isAuthenticated || existingAccountType) {
       router.replace('/dashboard')
-      return
     }
-
-    if (recoveryPath && recoveryPath !== '/account-type') {
-      router.replace(recoveryPath)
-    }
-  }, [isAuthenticated, isLoading, recoveryPath, router, session])
-  const [selectedType, setSelectedType] = useState<AccountType | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  }, [existingAccountType, isAuthenticated, isLoading, needsBusinessRecovery, recoveryPath, router, session])
 
   const handleContinue = async () => {
-    if (!selectedType) return
-
+    if (!canSetUp || submitted.current) return
+    submitted.current = true
+    setIsSubmitting(true)
     setError(null)
-    const result = await setAccountType(selectedType)
-    if (result.error) {
-      setError(result.error)
-    } else if (selectedType === AccountType.business) {
-      router.push('/onboarding')
-    } else {
-      router.push('/')
+
+    try {
+      const result = await setAccountType(AccountType.freelancer)
+      if (!result.error) {
+        router.replace('/dashboard')
+        return
+      }
+    } catch {
+      // Provider and database details must not reach the setup screen.
     }
+
+    setError(setupError)
+    submitted.current = false
+    setIsSubmitting(false)
+  }
+
+  if (!canSetUp) {
+    return (
+      <div className="w-full max-w-xl text-center" role="status">
+        {isLoading || !session || isAuthenticated || existingAccountType || recoveryPath === '/onboarding' ? (
+          <Loader2 className="mx-auto h-6 w-6 animate-spin" aria-label="Loading account setup" />
+        ) : (
+          <p className="text-muted-foreground">Could not load your account setup. Refresh this page and try again.</p>
+        )}
+      </div>
+    )
   }
 
   return (
-    <div className="w-full max-w-4xl">
+    <div className="w-full max-w-xl">
       <div className="text-center mb-8">
-        <h1 className="text-3xl font-bold">Choose your account type</h1>
+        <h1 className="text-3xl font-bold">Set up your solo business</h1>
         <p className="text-muted-foreground mt-2">
-          Select the option that best describes how you&apos;ll use Amountly
+          Keep client invoices and expenses together in Amountly.
         </p>
       </div>
 
+      <Card className="mb-8">
+        <CardHeader>
+          <div className="w-fit p-2 rounded-lg bg-primary text-primary-foreground">
+            <Briefcase className="h-6 w-6" aria-hidden="true" />
+          </div>
+          <CardTitle className="text-lg">For freelancers and solo service businesses</CardTitle>
+          <CardDescription>Start with the essentials for managing your own business.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ul className="space-y-2">
+            {[
+              'Capture receipts and review suggested expenses',
+              'Create invoices for client work',
+              'Track billable work and see your business finances',
+            ].map((feature) => (
+              <li key={feature} className="flex items-center text-sm">
+                <Check className="h-4 w-4 mr-2 shrink-0 text-green-500" aria-hidden="true" />
+                {feature}
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+
       {error && (
-        <div className="p-3 text-sm text-destructive bg-destructive/10 rounded-md mb-6 text-center">
+        <p role="alert" className="p-3 text-sm text-destructive bg-destructive/10 rounded-md mb-6 text-center">
           {error}
-        </div>
+        </p>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-        {accountTypeOptions.map((option) => {
-          const Icon = option.icon
-          const isSelected = selectedType === option.type
-
-          return (
-            <Card
-              key={option.type}
-              className={cn(
-                'cursor-pointer transition-all hover:border-primary/50',
-                isSelected && 'border-primary ring-2 ring-primary ring-offset-2'
-              )}
-              onClick={() => setSelectedType(option.type)}
-            >
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div
-                    className={cn(
-                      'p-2 rounded-lg',
-                      isSelected ? 'bg-primary text-primary-foreground' : 'bg-muted'
-                    )}
-                  >
-                    <Icon className="h-6 w-6" />
-                  </div>
-                  {isSelected && (
-                    <div className="p-1 rounded-full bg-primary">
-                      <Check className="h-4 w-4 text-primary-foreground" />
-                    </div>
-                  )}
-                </div>
-                <CardTitle className="text-lg">{option.title}</CardTitle>
-                <CardDescription>{option.description}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ul className="space-y-2">
-                  {option.features.map((feature) => (
-                    <li key={feature} className="flex items-center text-sm">
-                      <Check className="h-4 w-4 mr-2 text-green-500" />
-                      {feature}
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
-          )
-        })}
-      </div>
-
       <div className="flex justify-center">
-        <Button
-          size="lg"
-          onClick={handleContinue}
-          disabled={!selectedType || isLoading}
-        >
-          {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Continue
+        <Button size="lg" onClick={handleContinue} disabled={isSubmitting}>
+          {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+          {isSubmitting ? 'Setting up…' : 'Set up my solo business'}
         </Button>
       </div>
     </div>
