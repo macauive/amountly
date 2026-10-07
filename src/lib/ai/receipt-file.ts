@@ -23,13 +23,15 @@ async function validatePdf(bytes: Buffer) {
     throw invalidPdf()
   }
   const valid = await new Promise<boolean>((resolve) => {
-    const worker = new Worker(join(process.cwd(), 'scripts/receipt-pdf-worker.mjs'), {
+    // Keep the traced Node parser external. Turbopack rewrites `new Worker`
+    // into a bundled worker and spreads its Uint8Array into an ordinary object.
+    const worker: Worker = Reflect.construct(Worker, [join(process.cwd(), 'scripts/receipt-pdf-worker.mjs'), {
       workerData: Uint8Array.from(bytes),
       resourceLimits: { maxOldGenerationSizeMb: 128 },
       execArgv: [],
       stdout: true,
       stderr: true,
-    })
+    }])
     // Parser diagnostics may include document text. Drain them without logging.
     worker.stdout?.resume()
     worker.stderr?.resume()

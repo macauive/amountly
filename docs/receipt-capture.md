@@ -42,4 +42,6 @@ The follow-through workflow was separately verified in the in-app browser with A
 
 The full production Dockerfile also builds on Linux amd64 with Node 24, including the default Turbopack build. Its traced dependencies pass eight preprocessing tests and a scanned-JPEG PDF worker probe with network disabled and no optional canvas package. Production page/assets, CSP, cross-origin rejection and fail-closed health checks pass. These pre-release checks use isolated test data and services.
 
+The release smoke check exposed a Turbopack worker transform that changed PDF bytes into an ordinary object. The PDF validator now constructs the traced Node worker without that transform, preserving the typed bytes and existing limits. After a default production build, `node --test tests/receipt-production.test.cjs` runs two checks against the actual bundled validator; raw worker and source-level tests alone did not catch this failure. Inside the production container, set `AMOUNTLY_STANDALONE_ROOT=/app` when running that test.
+
 The runtime dependency `source-map-js` is patched to 1.2.2 for its [indexed source-map denial-of-service advisory](https://github.com/advisories/GHSA-68fv-2mgg-jv7q). The production-only dependency audit reports no findings. Seven development-dependency findings remain; PDF.js and Sharp have no reported findings in that audit.
