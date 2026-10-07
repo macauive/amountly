@@ -42,9 +42,9 @@ async function main() {
       grant usage on schema public, auth, storage to anon, authenticated, service_role;
     `)
     const migrations = fs.readdirSync('supabase/migrations').filter(name => name.endsWith('.sql')).sort()
-    const workflowMigrations = migrations.filter(name => name.startsWith('20260926'))
+    const workflowMigrations = migrations.filter(name => name >= '20260926021157')
     // fcddc0f contains the first eight workflow migrations. Rehearse only the
-    // three subsequent migrations against real data created by those commands.
+    // subsequent migrations against real data created by those commands.
     const incrementalMigrations = workflowMigrations.filter(name => name >= '20260926044850')
     const pendingMigrations = incrementalUpgrade ? incrementalMigrations : upgrade ? workflowMigrations : []
     for (const name of migrations.filter(name => !pendingMigrations.includes(name))) {
@@ -82,7 +82,7 @@ async function main() {
 
 
     if (incrementalUpgrade) {
-      assert.equal(incrementalMigrations.length, 3)
+      assert.equal(incrementalMigrations.length, 4)
       const payload = { client_id:id(200),issue_date:'2026-01-01',due_date:'2026-02-01',tax_rate:0,currency:'USD',notes:'Synthetic upgrade' }
       asUser(1, `select save_invoice('${id(1200)}','${JSON.stringify(payload)}','[{"description":"Existing work","quantity":1,"rate":100}]',null)`, true)
       asUser(1, `select invoice_action('${id(1200)}','issue',(select updated_at from invoices where id='${id(1200)}'))`, true)
@@ -102,7 +102,8 @@ async function main() {
       asUser(1, `select set_own_preferences('{"fiscal_year_start":4,"date_format":"DD/MM/YYYY"}')`, true)
       const tables = sql(`select quote_ident(schemaname)||'.'||quote_ident(tablename) from pg_tables where schemaname in ('public','amountly_private') order by 1`).split('\n')
       const snapshots = tables.map(table => {
-        const query = `select coalesce(jsonb_agg(row order by row::text), '[]'::jsonb) from (select to_jsonb(t) as row from ${table} t) records`
+        const columns = sql(`select string_agg(quote_ident(attname), ',' order by attnum) from pg_attribute where attrelid='${table}'::regclass and attnum>0 and not attisdropped`)
+        const query = `select coalesce(jsonb_agg(row order by row::text), '[]'::jsonb) from (select to_jsonb(t) as row from (select ${columns} from ${table}) t) records`
         return { table, query, before:sql(query) }
       })
       const backup = path.join(root, 'committed-schema.dump')
@@ -112,6 +113,7 @@ async function main() {
         for (const snapshot of snapshots) assert.equal(sql(snapshot.query), snapshot.before, `${snapshot.table}: incremental upgrade/retry changed existing data`)
       }
       verifySnapshots()
+      assert.equal(sql('select count(*) from expenses where reviewed_at is not null'), '0')
       // Existing command retries remain idempotent after the upgrade.
       asUser(1, receipt, true)
       asUser(1, reversal, true)
@@ -353,6 +355,125 @@ async function main() {
     denied(() => asUser(6,`update time_entries set billable_rate=200 where id='${id(853)}'`))
     denied(() => asUser(6,`delete from time_entries where id='${id(853)}'`))
     console.log('PASS: append-only payment corrections, safe retries/replacement payments, scoped access, exact-minute billing, atomic time reservations, concurrent duplicate prevention, release and rebilling')
+
+    // Solo review remains an owner-scoped draft marker with server timestamps.
+    assert.equal(sql('select count(*) from expenses where reviewed_at is not null'), '0')
+    const soloId=1300
+    const soloInsert=(n=soloId)=>`insert into expenses(id,user_id,expense_date,amount,currency,status,merchant) values('${id(n)}','${id(6)}','2026-01-01',25,'USD','DRAFT','Synthetic solo merchant')`
+    const soloReview=(n=soloId,reviewed='true',version=`(select updated_at from expenses where id='${id(n)}')`)=>`select set_expense_review('${id(n)}',${reviewed},${version})`
+    asUser(6,soloInsert(),true)
+    denied(()=>asUser(6,soloInsert(1301).replace('status,merchant','status,merchant,reviewed_at').replace("'Synthetic solo merchant')","'Synthetic solo merchant',now())")))
+    denied(()=>asUser(6,`update expenses set reviewed_at=now() where id='${id(soloId)}'`))
+    denied(()=>asUser(6,`select create_money_record('expenses','${id(1301)}','${JSON.stringify({user_id:id(6),amount:25,currency:'USD',expense_date:'2026-01-01',reviewed_at:'2026-01-01T00:00:00Z'})}')`),'22023')
+    for(const actor of [1,2,5,7,8,9]) denied(()=>asUser(actor,soloReview(soloId,'true',`'${sql(`select updated_at from expenses where id='${id(soloId)}'`)}'`)))
+    denied(()=>asUser(6,soloReview(soloId,'null')),'22023')
+    denied(()=>asUser(6,soloReview(soloId,'true','null')),'22023')
+    denied(()=>asUser(6,soloReview(1399,'true',"'2026-01-01'")))
+    denied(()=>asUser(6,soloReview(soloId,'true',"'2000-01-01'")),'PT409')
+    denied(()=>sql(`begin;set local role anon;select set_expense_review('${id(soloId)}',true,now());rollback`))
+    assert.equal(asUser(6,`select count(*) from record_events where record_id='${id(soloId)}'`),'1')
+    const unreviewedVersion=asUser(6,`select updated_at from expenses where id='${id(soloId)}'`)
+    asUser(6,soloReview(),true)
+    const reviewedTime=asUser(6,`select reviewed_at from expenses where id='${id(soloId)}'`)
+    assert.ok(reviewedTime)
+    assert.equal(asUser(6,`select status from expenses where id='${id(soloId)}'`),'DRAFT')
+    assert.notEqual(asUser(6,`select updated_at from expenses where id='${id(soloId)}'`),unreviewedVersion)
+    assert.equal(asUser(6,`select count(*) from record_events where record_id='${id(soloId)}' and action='reviewed' and actor_id='${id(6)}' and next_values->>'reviewed_at' is not null`),'1')
+    assert.equal(asUser(9,`select count(*) from record_events where record_id='${id(soloId)}'`),'0')
+    asUser(6,soloReview(),true)
+    assert.equal(asUser(6,`select reviewed_at from expenses where id='${id(soloId)}'`),reviewedTime)
+    assert.equal(asUser(6,`select count(*) from record_events where record_id='${id(soloId)}'`),'2')
+    denied(()=>asUser(6,`update expenses set reviewed_at=null where id='${id(soloId)}'`))
+    denied(()=>asUser(6,soloReview(soloId,'false',`'${unreviewedVersion}'`)),'PT409')
+    asUser(6,`update expenses set amount=amount where id='${id(soloId)}'`,true)
+    assert.equal(asUser(6,`select reviewed_at from expenses where id='${id(soloId)}'`),reviewedTime)
+    asUser(6,soloReview(soloId,'false'),true)
+    assert.equal(asUser(6,`select reviewed_at is null from expenses where id='${id(soloId)}'`),'t')
+    assert.equal(asUser(6,`select count(*) from record_events where record_id='${id(soloId)}' and action='review_cleared'`),'1')
+    sql(`insert into tasks(id,project_id,name) values('${id(351)}','${id(302)}','Synthetic solo task')`)
+    const changes=[
+      "amount=26", "currency='EUR'", "category='TRAVEL'", "expense_date='2026-01-02'",
+      "merchant='Edited synthetic merchant'", "description='Edited synthetic description'", "notes='Edited synthetic notes'",
+      `receipt_path='${id(6)}/synthetic.png'`, `project_id='${id(302)}'`, `task_id='${id(351)}'`,
+    ]
+    for(const patch of changes) {
+      asUser(6,soloReview(),true)
+      const events=asUser(6,`select count(*) from record_events where record_id='${id(soloId)}' and action='review_cleared'`)
+      asUser(6,`update expenses set ${patch} where id='${id(soloId)}'`,true)
+      assert.equal(asUser(6,`select reviewed_at is null from expenses where id='${id(soloId)}'`),'t',patch)
+      assert.equal(Number(asUser(6,`select count(*) from record_events where record_id='${id(soloId)}' and action='review_cleared'`)),Number(events)+1,patch)
+    }
+    asUser(6,soloReview(),true)
+    asUser(6,`insert into expense_line_items(id,expense_id,description,amount,category) values('${id(1350)}','${id(soloId)}','Synthetic line',5,'OTHER')`,true)
+    assert.equal(asUser(6,`select reviewed_at is null from expenses where id='${id(soloId)}'`),'t')
+    asUser(6,soloReview(),true)
+    asUser(6,`update expense_line_items set amount=amount where id='${id(1350)}'`,true)
+    assert.equal(asUser(6,`select reviewed_at is not null from expenses where id='${id(soloId)}'`),'t')
+    asUser(6,`update expense_line_items set amount=6 where id='${id(1350)}'`,true)
+    assert.equal(asUser(6,`select reviewed_at is null from expenses where id='${id(soloId)}'`),'t')
+    asUser(6,soloReview(),true)
+    asUser(6,`delete from expense_line_items where id='${id(1350)}'`,true)
+    assert.equal(asUser(6,`select reviewed_at is null from expenses where id='${id(soloId)}'`),'t')
+    asUser(6,soloInsert(1302),true)
+    asUser(6,`insert into expense_line_items(id,expense_id,description,amount,category) values('${id(1351)}','${id(soloId)}','Synthetic reassignment line',5,'OTHER')`,true)
+    asUser(6,soloReview(),true)
+    asUser(6,soloReview(1302),true)
+    const beforeLineMove=asUser(6,`select updated_at from expenses where id='${id(soloId)}'`)
+    denied(()=>asUser(6,`update expense_line_items set expense_id='${id(1302)}' where id='${id(1351)}'`))
+    sql(`update expense_line_items set expense_id='${id(1302)}' where id='${id(1351)}'`)
+    assert.equal(asUser(6,`select count(*) from expenses where id in ('${id(soloId)}','${id(1302)}') and reviewed_at is not null`),'0')
+    assert.notEqual(asUser(6,`select updated_at from expenses where id='${id(soloId)}'`),beforeLineMove)
+    denied(()=>asUser(6,soloReview(soloId,'true',`'${beforeLineMove}'`)),'PT409')
+    const beforeUnreviewedLineEdit=asUser(6,`select updated_at from expenses where id='${id(1302)}'`)
+    asUser(6,`update expense_line_items set amount=7 where id='${id(1351)}'`,true)
+    assert.notEqual(asUser(6,`select updated_at from expenses where id='${id(1302)}'`),beforeUnreviewedLineEdit)
+    denied(()=>asUser(6,soloReview(1302,'true',`'${beforeUnreviewedLineEdit}'`)),'PT409')
+    // Trusted administrative receipt-url corrections also invalidate provenance.
+    asUser(6,soloReview(),true)
+    sql(`update expenses set receipt_url='https://example.invalid/synthetic-receipt' where id='${id(soloId)}'`)
+    assert.equal(asUser(6,`select reviewed_at is null from expenses where id='${id(soloId)}'`),'t')
+    asUser(6,soloReview(),true)
+    asUser(6,`update expenses set archived_at=now() where id='${id(soloId)}'`,true)
+    assert.equal(asUser(6,`select reviewed_at is null from expenses where id='${id(soloId)}'`),'t')
+    denied(()=>asUser(6,soloReview()))
+    // Eligibility is checked against the profile and current record state.
+    sql(`insert into expenses(id,user_id,expense_date,amount,currency,status) values
+      ('${id(1320)}','${id(1)}','2026-01-01',10,'USD','DRAFT'),
+      ('${id(1321)}','${id(8)}','2026-01-01',10,'USD','DRAFT'),
+      ('${id(1322)}','${id(6)}','2026-01-01',10,'USD','SUBMITTED'),
+      ('${id(1323)}','${id(6)}','2026-01-01',10,'USD','APPROVED'),
+      ('${id(1324)}','${id(6)}','2026-01-01',10,'USD','REIMBURSED'),
+      ('${id(1325)}','${id(6)}','2026-01-01',10,'USD','REJECTED');`)
+    denied(()=>asUser(1,soloReview(1320)))
+    denied(()=>asUser(8,soloReview(1321)))
+    for(const n of [1322,1323,1324]) denied(()=>asUser(6,soloReview(n)))
+    sql(`set "request.jwt.claims" = '{"role":"service_role"}'; update users set is_active=false where id='${id(6)}'`)
+    denied(()=>asUser(6,soloReview(1325,'true',`'${sql(`select updated_at from expenses where id='${id(1325)}'`)}'`)))
+    sql(`set "request.jwt.claims" = '{"role":"service_role"}'; update users set is_active=true,organization_id='${id(100)}' where id='${id(6)}'`)
+    denied(()=>asUser(6,soloReview(1325)))
+    sql(`set "request.jwt.claims" = '{"role":"service_role"}'; update users set organization_id=null where id='${id(6)}'`)
+    asUser(6,soloReview(1325),true)
+    assert.equal(asUser(6,`select status from expenses where id='${id(1325)}'`),'REJECTED')
+    asUser(6,soloReview(1325,'false'),true)
+    assert.equal(asUser(6,`select reviewed_at is null and status='REJECTED' from expenses where id='${id(1325)}'`),'t')
+    asUser(6,soloReview(1325),true)
+    asUser(6,`update expenses set notes='Corrected synthetic rejected expense' where id='${id(1325)}'`,true)
+    assert.equal(asUser(6,`select reviewed_at is null and status='REJECTED' from expenses where id='${id(1325)}'`),'t')
+    denied(()=>asUser(6,`update expenses set status='APPROVED' where id='${id(1325)}'`))
+    asUser(6,soloInsert(1340),true)
+    asUser(6,soloReview(1340),true)
+    asUser(6,`select review_work_record('expenses','${id(1340)}','submit',(select updated_at from expenses where id='${id(1340)}'))`,true)
+    assert.equal(asUser(6,`select reviewed_at is null and status='SUBMITTED' from expenses where id='${id(1340)}'`),'t')
+    assert.equal(asUser(6,`select count(*) from record_events where record_id='${id(1340)}' and action='review_cleared' and previous_status='DRAFT' and next_status='SUBMITTED'`),'1')
+    // Two sessions with one observed version can produce only one new review.
+    asUser(6,soloInsert(1330),true)
+    const soloVersion=asUser(6,`select updated_at from expenses where id='${id(1330)}'`)
+    const soloRace=await Promise.allSettled([1,2].map(()=>concurrent(path.join(bin,'psql'),[...psqlArgs,'-c',asUserSql(6,soloReview(1330,'true',`'${soloVersion}'`),true)])))
+    assert.equal(soloRace.filter(result=>result.status==='fulfilled').length,1)
+    assert.ok(soloRace.find(result=>result.status==='rejected').reason.stderr.includes('PT409'))
+    assert.equal(asUser(6,`select count(*) from record_events where record_id='${id(1330)}' and action='reviewed'`),'1')
+    assert.equal(asUser(6,`select count(*) from record_events where record_id in ('${id(soloId)}','${id(1325)}','${id(1330)}') and (next_values ?| array['merchant','description','notes','receipt_path','receipt_url'] or previous_values ?| array['merchant','description','notes','receipt_path','receipt_url'])`),'0')
+    console.log('PASS: solo expense review has owner/account/status/version guards, server timestamps, unforgeable markers, no-op preservation, safe scoped history, edit/receipt/line/archive clearing and concurrent conflict rejection')
 
     asUser(3,`insert into expenses(id,user_id,expense_date,amount,currency,status,merchant) values('${id(900)}','${id(3)}','2026-01-01',25,'USD','DRAFT','Synthetic merchant')`,true)
     const review=(actorAction,expected=`(select updated_at from expenses where id='${id(900)}')`)=>`select review_work_record('expenses','${id(900)}','${actorAction}',${expected})`

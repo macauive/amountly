@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { getExpenses, createExpense, updateExpense, archiveExpense, uploadReceipt, getReceiptUrl } from '@/services/expenses.service'
+import { RecordSaveError, setExpenseReview } from '@/services/review.service'
 import { useCreateAttempt } from '@/hooks/useCreateAttempt'
 import { SaveAttemptNotice } from '@/components/SaveAttemptNotice'
 import { RecordHistoryDialog } from '@/components/RecordHistoryDialog'
@@ -57,7 +58,7 @@ import { useDisplayDate } from '@/hooks/useDisplayDate'
 import { captureExpenseFromText, captureReceiptDocumentFromText, captureReceiptFromFile } from '@/lib/expense-ai'
 import { supportedReceiptCurrencies, type ReceiptFileCaptureResult } from '@/lib/ai/receipt-contract'
 import { expenseTotalsByCurrency, findPossibleReceiptDuplicate, isSupportedReceiptCurrency, receiptDraftIsComplete, receiptExpenseFields } from '@/lib/receipt-review'
-import { expenseNavigation, filterExpenseList, validExpenseFilterDate } from '@/lib/expense-navigation'
+import { expenseNavigation, expenseNeedsReview, filterExpenseList, validExpenseFilterDate } from '@/lib/expense-navigation'
 
 function formatExpenseAmount(amount: number, currency: string) {
   if (!Number.isFinite(amount)) return 'Amount unavailable'
@@ -95,7 +96,7 @@ function getErrorMessage(error: unknown, fallback: string) {
 export default function ExpensesPage() {
   const { user } = useAuth()
   // A new ownership boundary gets a fresh editor, including uncertain saves.
-  return <ExpensesWorkspace key={`${user?.id ?? 'signed-out'}:${user?.organization_id ?? ''}`} />
+  return <ExpensesWorkspace key={`${user?.id ?? 'signed-out'}:${user?.organization_id ?? ''}:${user?.account_type ?? ''}:${user?.role ?? ''}`} />
 }
 
 function ExpensesWorkspace() {
@@ -104,11 +105,13 @@ function ExpensesWorkspace() {
   const router = useRouter()
   const queryString = useSearchParams()?.toString() ?? ''
   const navigation = expenseNavigation(new URLSearchParams(queryString))
+  const isSolo = user?.account_type === 'freelancer'
   const [search, setSearch] = useState('')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState(navigation.status)
+  const [reviewFilter, setReviewFilter] = useState('all')
   const [linkError, setLinkError] = useState<string | null>(null)
   const handledLink = useRef<string | null>(null)
   const receiptInput = useRef<HTMLInputElement>(null)
@@ -124,6 +127,9 @@ function ExpensesWorkspace() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null)
   const [archiveTarget, setArchiveTarget] = useState<Expense | null>(null)
+  const [reviewTarget, setReviewTarget] = useState<{ expense: Expense; reviewed: boolean } | null>(null)
+  const [reviewSaving, setReviewSaving] = useState(false)
+  const reviewOperation = useRef(false)
   const [historyId,setHistoryId]=useState<string|null>(null)
   const [saving, setSaving] = useState(false)
   const [smartCaptureText, setSmartCaptureText] = useState('')
@@ -248,6 +254,14 @@ function ExpensesWorkspace() {
     return current
   }
   const readOnlyExpense = !!selectedExpense && (selectedExpense.user_id !== user?.id || !['DRAFT', 'REJECTED'].includes(selectedExpense.status))
+  const selectedExpenseDirty = !!selectedExpense && !readOnlyExpense && (!!receiptFile
+    || Number(formData.amount) !== selectedExpense.amount || formData.currency !== selectedExpense.currency
+    || formData.category !== selectedExpense.category || formData.merchant !== (selectedExpense.merchant ?? '')
+    || formData.description !== (selectedExpense.description ?? '') || formData.notes !== (selectedExpense.notes ?? '')
+    || formData.project_id !== (selectedExpense.project_id ?? '') || formData.expense_date !== dateInputValue(selectedExpense.expense_date))
+  const canReviewSavedExpense = (expense: Expense) => isSolo && !user?.organization_id && user?.is_active !== false
+    && expense.user_id === user?.id && !expense.archived_at && ['DRAFT', 'REJECTED'].includes(expense.status)
+  const reviewActionDisabled = saving || reviewSaving || createAttempt.unknown || !!extracting || (dialogOpen && selectedExpenseDirty)
   const extractionIsCurrent = (current: { version: number; controller: AbortController }) =>
     extraction.current.version === current.version && !current.controller.signal.aborted
   const finishExtraction = (current: { version: number; controller: AbortController }) => {
@@ -258,6 +272,7 @@ function ExpensesWorkspace() {
   }
 
   const openCreateDialog = () => {
+    if (reviewOperation.current || saving) return
     if (!createAttempt.reset()) { setDialogOpen(true); return }
     resetReceiptReview()
     uploadedReceipt.current = null
@@ -281,6 +296,7 @@ function ExpensesWorkspace() {
   }
 
   const openEditDialog = (expense: Expense) => {
+    if (reviewOperation.current || saving) return
     if (!createAttempt.reset()) { setDialogOpen(true); return }
     resetReceiptReview()
     uploadedReceipt.current = null
@@ -315,7 +331,7 @@ function ExpensesWorkspace() {
     if (navigation.expenseId || navigation.uploadReceipt) {
       setLinkError(null)
       // Navigation cannot replace an in-flight or uncertain save.
-      if (saving || createAttempt.unknown || dialogOpen) {
+      if (saving || reviewSaving || createAttempt.unknown || dialogOpen) {
         setLinkError('Finish or close the current expense before opening another.')
       } else if (navigation.uploadReceipt) {
         focusReceipt.current = true
@@ -333,9 +349,40 @@ function ExpensesWorkspace() {
     }
   }, [queryString, loading, error, user?.id, user?.organization_id, expenses])
 
+  const requestExpenseReview = (expense: Expense) => {
+    if (!canReviewSavedExpense(expense) || reviewActionDisabled || reviewOperation.current
+      || (dialogOpen && selectedExpense?.id !== expense.id)) return
+    setReviewTarget({ expense, reviewed: !expense.reviewed_at })
+  }
+  const confirmExpenseReview = async () => {
+    if (!reviewTarget || !mounted.current || reviewOperation.current || reviewActionDisabled
+      || !canReviewSavedExpense(reviewTarget.expense)) return
+    const target = reviewTarget
+    reviewOperation.current = true
+    setReviewSaving(true)
+    try {
+      await setExpenseReview(target.expense.id, target.reviewed, target.expense.updated_at)
+      if (!mounted.current) return
+      setReviewTarget(null)
+      closeExpenseDialog()
+      await loadData()
+      if (mounted.current) toast.success(target.reviewed ? 'Expense marked reviewed' : 'Expense review cleared')
+    } catch (failure) {
+      if (!mounted.current) return
+      setReviewTarget(null)
+      // Reload before another attempt; never attach a new version to stale form input.
+      closeExpenseDialog()
+      await loadData()
+      if (mounted.current) toast.error(failure instanceof RecordSaveError ? failure.message : 'Could not confirm the review. Reload and check the current expense before trying again.')
+    } finally {
+      reviewOperation.current = false
+      if (mounted.current) setReviewSaving(false)
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (saving || readOnlyExpense || extraction.current.controller) return
+    if (saving || reviewOperation.current || readOnlyExpense || extraction.current.controller) return
     if (!createAttempt.unknown && receiptFileResult && !receiptReviewed) {
       toast.error('Review the extracted receipt and confirm the details before saving.')
       return
@@ -390,7 +437,7 @@ function ExpensesWorkspace() {
   }
 
   const handleDelete = async () => {
-    if (!archiveTarget) return
+    if (!archiveTarget || reviewOperation.current) return
 
     try {
       await archiveExpense(archiveTarget.id, archiveTarget.updated_at)
@@ -496,9 +543,9 @@ function ExpensesWorkspace() {
 
   const possibleReceiptDuplicate = receiptFileResult
     ? findPossibleReceiptDuplicate(formData, expenses.filter(expense => expense.user_id === user?.id), selectedExpense?.id) : undefined
-  const filteredExpenses = filterExpenseList(expenses, { query: search, start: startDate, end: endDate, category: categoryFilter, status: statusFilter })
+  const filteredExpenses = filterExpenseList(expenses, { query: search, start: startDate, end: endDate, category: categoryFilter, status: statusFilter, review: isSolo ? reviewFilter : 'all' })
   const invalidDateRange = (!!startDate && !validExpenseFilterDate(startDate)) || (!!endDate && !validExpenseFilterDate(endDate)) || (!!startDate && !!endDate && startDate > endDate)
-  const clearFilters = () => { setSearch(''); setStartDate(''); setEndDate(''); setCategoryFilter('all'); setStatusFilter('all'); setLinkError(null); router.replace('/expenses', { scroll: false }) }
+  const clearFilters = () => { setSearch(''); setStartDate(''); setEndDate(''); setCategoryFilter('all'); setStatusFilter('all'); setReviewFilter('all'); setLinkError(null); router.replace('/expenses', { scroll: false }) }
 
   if (loading) {
     return (
@@ -532,7 +579,7 @@ function ExpensesWorkspace() {
           <h1 className="text-2xl font-bold">Expenses</h1>
           <p className="text-muted-foreground">Track and manage your expenses</p>
         </div>
-        <Button onClick={openCreateDialog} className="gap-2">
+        <Button onClick={openCreateDialog} disabled={reviewSaving} className="gap-2">
           <Plus className="w-4 h-4" />
           Add Expense
         </Button>
@@ -561,12 +608,13 @@ function ExpensesWorkspace() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Pending</CardTitle>
+            <CardTitle className="text-sm font-medium">{isSolo ? 'Needs review' : 'Pending'}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {expenses.filter(e => e.status === ExpenseStatus.submitted).length}
+              {expenses.filter(e => isSolo ? e.user_id === user?.id && expenseNeedsReview(e) : e.status === ExpenseStatus.submitted).length}
             </div>
+            {isSolo && <p className="mt-1 text-sm text-muted-foreground">Saved draft and rejected expenses</p>}
           </CardContent>
         </Card>
       </div>
@@ -574,12 +622,13 @@ function ExpensesWorkspace() {
       <Card>
         <CardHeader><CardTitle className="text-base">Find expenses</CardTitle></CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className={`grid gap-3 sm:grid-cols-2 ${isSolo ? 'lg:grid-cols-3 xl:grid-cols-6' : 'lg:grid-cols-5'}`}>
             <div className="space-y-1"><Label htmlFor="expense_search">Merchant or description</Label><Input id="expense_search" maxLength={100} value={search} onChange={e => setSearch(e.target.value.slice(0, 100))} placeholder="Search expenses" /></div>
             <div className="space-y-1"><Label htmlFor="expense_start">From</Label><Input id="expense_start" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor="expense_end">Through</Label><Input id="expense_end" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor="expense_category_filter">Category</Label><Select value={categoryFilter} onValueChange={setCategoryFilter}><SelectTrigger id="expense_category_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All categories</SelectItem>{Object.entries(expenseCategoryLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
             <div className="space-y-1"><Label htmlFor="expense_status_filter">Status</Label><Select value={statusFilter} onValueChange={value => { setStatusFilter(value); router.replace(value === 'all' ? '/expenses' : `/expenses?status=${encodeURIComponent(value)}`, { scroll: false }) }}><SelectTrigger id="expense_status_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem>{Object.entries(expenseStatusLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+            {isSolo && <div className="space-y-1"><Label htmlFor="expense_review_filter">Review</Label><Select value={reviewFilter} onValueChange={setReviewFilter}><SelectTrigger id="expense_review_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All review states</SelectItem><SelectItem value="needs-review">Needs review</SelectItem><SelectItem value="reviewed">Reviewed</SelectItem></SelectContent></Select></div>}
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm text-muted-foreground" role="status">Showing {filteredExpenses.length} of {expenses.length} expenses. Summary totals include all expenses.</p><Button variant="ghost" size="sm" onClick={clearFilters}>Clear filters</Button></div>
           {invalidDateRange && <p className="text-sm text-destructive" role="alert">Choose valid dates with the end on or after the start.</p>}
@@ -642,19 +691,21 @@ function ExpensesWorkspace() {
                       <Badge variant={getStatusVariant(expense.status)}>
                         {expenseStatusLabels[expense.status]}
                       </Badge>
+                      {isSolo && (expense.reviewed_at || ['DRAFT', 'REJECTED'].includes(expense.status)) && <Badge variant={expense.reviewed_at ? 'secondary' : 'outline'} className="ml-1">{expense.reviewed_at ? 'Reviewed' : 'Needs review'}</Badge>}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button variant="ghost" size="sm" onClick={()=>setHistoryId(expense.id)}>History</Button>
                       {(expense.receipt_path || expense.receipt_url) && <Button variant="ghost" size="sm" onClick={async () => {
-                        try { const url = await getReceiptUrl(expense); window.open(url, '_blank', 'noopener,noreferrer') }
-                        catch { toast.error('Could not open receipt. Check your access and try again.') }
+                        try { const url = await getReceiptUrl(expense); if (mounted.current) window.open(url, '_blank', 'noopener,noreferrer') }
+                        catch { if (mounted.current) toast.error('Could not open receipt. Check your access and try again.') }
                       }}>Receipt</Button>}
+                      {canReviewSavedExpense(expense) && <Button variant="outline" size="sm" disabled={reviewActionDisabled} onClick={() => requestExpenseReview(expense)}>{expense.reviewed_at ? 'Clear review' : 'Mark reviewed'}</Button>}
                       <Button
                         variant="ghost"
                         size="icon"
                         onClick={() => openEditDialog(expense)}
                         aria-label="Edit expense"
-                        disabled={expense.user_id !== user?.id || !['DRAFT','REJECTED'].includes(expense.status)}
+                        disabled={reviewSaving || expense.user_id !== user?.id || !['DRAFT','REJECTED'].includes(expense.status)}
                       >
                         <Pencil className="w-4 h-4" />
                       </Button>
@@ -662,7 +713,7 @@ function ExpensesWorkspace() {
                         variant="ghost"
                         size="icon"
                         aria-label="Archive expense"
-                        disabled={expense.user_id !== user?.id || !['DRAFT','REJECTED'].includes(expense.status)}
+                        disabled={reviewSaving || expense.user_id !== user?.id || !['DRAFT','REJECTED'].includes(expense.status)}
                         onClick={() => {
                           setArchiveTarget(expense)
                           setDeleteDialogOpen(true)
@@ -680,7 +731,7 @@ function ExpensesWorkspace() {
       )}
 
       {/* Create/Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={open => { if (!saving) { if (open) setDialogOpen(true); else closeExpenseDialog() } }}>
+      <Dialog open={dialogOpen} onOpenChange={open => { if (!saving && !reviewSaving) { if (open) setDialogOpen(true); else closeExpenseDialog() } }}>
         <DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto" onOpenAutoFocus={event => {
           if (focusReceipt.current && receiptInput.current) {
             event.preventDefault()
@@ -702,7 +753,12 @@ function ExpensesWorkspace() {
               try { const url = await getReceiptUrl(selectedExpense); if (mounted.current) window.open(url, '_blank', 'noopener,noreferrer') }
               catch { if (mounted.current) toast.error('Could not open receipt. Check your access and try again.') }
             }}>Open saved receipt</Button>}
-            <fieldset disabled={saving || createAttempt.unknown || readOnlyExpense} className="grid gap-4 py-4">
+            {isSolo && selectedExpense && (selectedExpense.reviewed_at || ['DRAFT', 'REJECTED'].includes(selectedExpense.status)) && <div className="mt-3 space-y-2 rounded border p-3">
+              <Badge variant={selectedExpense.reviewed_at ? 'secondary' : 'outline'}>{selectedExpense.reviewed_at ? 'Reviewed' : 'Needs review'}</Badge>
+              {canReviewSavedExpense(selectedExpense) && <Button type="button" variant="outline" className="ml-2" disabled={reviewActionDisabled} onClick={() => requestExpenseReview(selectedExpense)}>{selectedExpense.reviewed_at ? 'Clear review' : 'Mark reviewed'}</Button>}
+              <p className="text-sm text-muted-foreground">{selectedExpenseDirty ? 'Save your changes before reviewing this expense.' : 'Review the saved details and receipt. Changes to the expense require another review.'}</p>
+            </div>}
+            <fieldset disabled={saving || reviewSaving || createAttempt.unknown || readOnlyExpense} className="grid gap-4 py-4">
               {!selectedExpense && (
                 <div className="rounded-lg border bg-primary/5 p-3">
                   <div className="mb-3 flex items-start gap-3">
@@ -942,10 +998,10 @@ function ExpensesWorkspace() {
               </div>
             </fieldset>
             <DialogFooter>
-              <Button type="button" variant="outline" disabled={saving} onClick={() => { closeExpenseDialog(); if (createAttempt.unknown) void loadData() }}>
+              <Button type="button" variant="outline" disabled={saving || reviewSaving} onClick={() => { closeExpenseDialog(); if (createAttempt.unknown) void loadData() }}>
                 {readOnlyExpense ? 'Close' : createAttempt.unknown ? 'Close and review list' : 'Cancel'}
               </Button>
-              {!readOnlyExpense && <Button type="submit" disabled={saving || !!extracting || (!createAttempt.unknown && !!receiptFileResult && !receiptReviewed)}>
+              {!readOnlyExpense && <Button type="submit" disabled={saving || reviewSaving || !!extracting || (!createAttempt.unknown && !!receiptFileResult && !receiptReviewed)}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {createAttempt.unknown ? 'Retry original save' : selectedExpense ? 'Save Changes' : 'Add Expense'}
               </Button>}
@@ -953,6 +1009,20 @@ function ExpensesWorkspace() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!reviewTarget} onOpenChange={open => { if (!open && !reviewOperation.current) setReviewTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{reviewTarget?.reviewed ? 'Mark expense reviewed?' : 'Clear expense review?'}</AlertDialogTitle>
+            <AlertDialogDescription>{reviewTarget?.reviewed ? 'Confirm that you checked the saved amount, currency, date, category and receipt. The review will be recorded in its history.' : 'Clear the reviewed label so this saved expense needs review again. The change will be recorded in its history.'}</AlertDialogDescription>
+          </AlertDialogHeader>
+          {reviewTarget && <p className="text-sm">{reviewTarget.expense.merchant || reviewTarget.expense.description || 'Expense'} · {formatExpenseAmount(reviewTarget.expense.amount, reviewTarget.expense.currency)}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reviewSaving}>Cancel</AlertDialogCancel>
+            <Button type="button" disabled={reviewSaving} onClick={confirmExpenseReview}>{reviewSaving ? 'Saving…' : reviewTarget?.reviewed ? 'Confirm mark reviewed' : 'Confirm clear review'}</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete Confirmation */}
       <AlertDialog open={deleteDialogOpen} onOpenChange={open => { setDeleteDialogOpen(open); if (!open) setArchiveTarget(null) }}>

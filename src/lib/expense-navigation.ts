@@ -16,8 +16,11 @@ export function expenseNavigation(params: URLSearchParams) {
     uploadReceipt: !invalid && action === 'upload-receipt', status: !invalid && status ? status : 'all' }
 }
 
-export type ExpenseListFilters = { query: string; start: string; end: string; category: string; status: string }
-type FilterableExpense = { merchant?: string; description?: string; expense_date: string; category: string; status: string }
+export type ExpenseListFilters = { query: string; start: string; end: string; category: string; status: string; review?: string }
+type FilterableExpense = { merchant?: string; description?: string; expense_date: string; category: string; status: string; reviewed_at?: string | null }
+export function expenseNeedsReview(expense: Pick<FilterableExpense, 'status' | 'reviewed_at'>) {
+  return !expense.reviewed_at && [ExpenseStatus.draft, ExpenseStatus.rejected].includes(expense.status as ExpenseStatus)
+}
 export function validExpenseFilterDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
   const date = new Date(`${value}T00:00:00Z`)
@@ -29,11 +32,14 @@ export function filterExpenseList<T extends FilterableExpense>(expenses: readonl
   if ((filters.start && !validExpenseFilterDate(filters.start)) || (filters.end && !validExpenseFilterDate(filters.end))
     || (filters.start && filters.end && filters.start > filters.end)
     || (filters.category !== 'all' && !Object.values(ExpenseCategory).includes(filters.category as ExpenseCategory))
-    || (filters.status !== 'all' && !Object.values(ExpenseStatus).includes(filters.status as ExpenseStatus))) return []
+    || (filters.status !== 'all' && !Object.values(ExpenseStatus).includes(filters.status as ExpenseStatus))
+    || (filters.review !== undefined && !['all', 'needs-review', 'reviewed'].includes(filters.review))) return []
   const query = filters.query.slice(0, 100).normalize('NFKC').trim().toLocaleLowerCase('en-US')
   return expenses.filter(expense => (!query || `${expense.merchant ?? ''} ${expense.description ?? ''}`.normalize('NFKC').toLocaleLowerCase('en-US').includes(query))
     && (!filters.start || expense.expense_date.slice(0, 10) >= filters.start)
     && (!filters.end || expense.expense_date.slice(0, 10) <= filters.end)
     && (filters.category === 'all' || expense.category === filters.category)
-    && (filters.status === 'all' || expense.status === filters.status))
+    && (filters.status === 'all' || expense.status === filters.status)
+    && (!filters.review || filters.review === 'all'
+      || (filters.review === 'reviewed' ? !!expense.reviewed_at : expenseNeedsReview(expense))))
 }

@@ -8,6 +8,8 @@ import { incomeRecords, expenseRecords, reportPeriod, sumMoney, type IncomeBasis
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { AccountType } from '@/types/enums'
+import { AccountantPacketExport } from '@/components/AccountantPacketExport'
 
 export function WorkspacePeriodReport({ invoices, expenses, currency, basis, canExport }: {
   invoices: Invoice[]; expenses: Expense[]; currency: string; basis: IncomeBasis; canExport: boolean
@@ -30,8 +32,10 @@ export function WorkspacePeriodReport({ invoices, expenses, currency, basis, can
     <p className="font-medium">{displayDate(period.start)} – {displayDate(period.end)} · {currency} · {basis === 'cash' ? 'Cash received' : 'Invoices issued'}</p>
     <div className="grid gap-3 sm:grid-cols-2"><p>Income: <strong>{money(sumMoney(income))}</strong></p><p>Captured expenses: <strong>{money(sumMoney(captured))}</strong></p></div>
     <p className="text-sm text-muted-foreground">Uses the currency and income basis selected above. Currencies are never combined. Reversed receipts and draft/cancelled invoices are excluded; legacy Paid labels without receipts do not count as cash. Expenses are captured records, not proof of payment or deductibility.</p>
-    {canExport && (rows.length ? <Button variant="outline" asChild><a href={downloadUrl} target="_blank" rel="noopener noreferrer">Export workspace period CSV</a></Button>
-      : <Button variant="outline" disabled>Export workspace period CSV</Button>)}
+    {canExport && <div className="flex flex-wrap gap-3">{rows.length ? <Button variant="outline" asChild><a href={downloadUrl} target="_blank" rel="noopener noreferrer">Export workspace period CSV</a></Button>
+      : <Button variant="outline" disabled>Export workspace period CSV</Button>}
+      {user?.account_type === AccountType.freelancer && !user.organization_id && <AccountantPacketExport key={`${user.id}-${year}-${month}-${currency}-${basis}`} year={year} month={month} start={period.start} end={period.end} currency={currency} basis={basis} disabled={!rows.length} />}
+    </div>}
     <div className="max-h-96 overflow-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left"><th className="py-2">Date</th><th>Record</th><th>Name</th><th className="text-right">Amount ({currency})</th><th className="pl-3">Status</th></tr></thead><tbody>{rows.map((row,index) => <tr key={`${row.type}-${index}`} className="border-b"><td className="whitespace-nowrap py-2 pr-3">{displayDate(row.date)}</td><td className="pr-3">{row.type}</td><td className="pr-3">{row.name}</td><td className="text-right">{money(row.amount)}</td><td className="pl-3">{row.status}</td></tr>)}</tbody></table>{!rows.length && <p className="py-3">No matching records in this period.</p>}</div>
   </CardContent></Card>
 }

@@ -237,6 +237,8 @@ export interface Expense {
   receipt_url?: string
   receipt_path?: string
   status: ExpenseStatus
+  reviewed_at?: string | null
+  archived_at?: string | null
   notes?: string
   invoice_id?: string
   created_at: string
@@ -575,7 +577,7 @@ export type CreateInvoiceLineItemInput = Pick<InvoiceLineItem, 'invoice_id' | 'd
 }
 export type UpdateInvoiceLineItemInput = Partial<CreateInvoiceLineItemInput>
 
-export type CreateExpenseInput = Omit<Expense, 'id' | 'created_at' | 'updated_at' | 'project' | 'task' | 'user'>
+export type CreateExpenseInput = Omit<Expense, 'id' | 'created_at' | 'updated_at' | 'reviewed_at' | 'archived_at' | 'project' | 'task' | 'user'>
 export type UpdateExpenseInput = Partial<CreateExpenseInput>
 
 export type CreateBillInput = Omit<Bill, 'id' | 'created_at' | 'updated_at'>

@@ -38,7 +38,7 @@ function renderPage(page, accountType, expenses, time = []) {
           : { 1: expenses, 2: { invoices: [], expenses, timeEntries: [], vendorBills: [] } }
         return [Object.hasOwn(replacements, index) ? replacements[index] : initial, () => {}]
       },
-      useEffect: () => {}, useCallback: callback => callback,
+      useEffect: () => {}, useCallback: callback => callback, useRef: initial => ({ current: initial }),
     },
     'next/link': 'Link',
     'next/navigation': { useRouter: () => ({ push: () => assert.fail('Rendering must not navigate') }) },
@@ -58,7 +58,9 @@ function renderPage(page, accountType, expenses, time = []) {
     card: ['Card', 'CardContent', 'CardHeader', 'CardTitle'], button: ['Button'], badge: ['Badge'], progress: ['Progress'],
     dialog: ['Dialog', 'DialogContent', 'DialogDescription', 'DialogFooter', 'DialogHeader', 'DialogTitle'],
   })) overrides[`@/components/ui/${module}`] = Object.fromEntries(names.map(name => [name, name]))
-  return loadApp(overrides)(`src/app/(dashboard)/${page}/page.tsx`).default()
+  let tree = loadApp(overrides)(`src/app/(dashboard)/${page}/page.tsx`).default()
+  while (typeof tree?.type === 'function') tree = tree.type(tree.props)
+  return tree
 }
 
 test('receipt capture is the first work quick action; personal actions remain unchanged', () => {

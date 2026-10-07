@@ -23,6 +23,17 @@ export async function reviewWorkRecord(kind: 'expenses' | 'time_entries', id: st
   if (error) throw recordError(error.code)
 }
 
+export async function setExpenseReview(id: string, reviewed: boolean, expectedUpdatedAt: string): Promise<void> {
+  if (typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+    || typeof reviewed !== 'boolean' || typeof expectedUpdatedAt !== 'string' || expectedUpdatedAt.length > 64
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(expectedUpdatedAt)
+    || !Number.isFinite(Date.parse(expectedUpdatedAt))) throw recordError('22023')
+  const { error } = await getSupabaseClient().rpc('set_expense_review', {
+    p_id: id, p_reviewed: reviewed, p_expected_updated_at: expectedUpdatedAt,
+  })
+  if (error) throw recordError(error.code)
+}
+
 export async function getRecordHistory(kind: string, id: string): Promise<RecordEvent[]> {
   const rows: RecordEvent[] = []
   for (let offset = 0; ; offset += 200) {

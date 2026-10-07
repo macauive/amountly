@@ -4,7 +4,7 @@ import { useDisplayDate } from '@/hooks/useDisplayDate'
 import { WorkspacePeriodReport } from '@/components/WorkspacePeriodReport'
 import { incomeRecords,expenseRecords,sumMoney,estimateFederalTax,estimateSETax,taxQuarters,supportedTaxYear,taxSources,type IncomeBasis } from '@/lib/reporting'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAppState } from '@/contexts/AppStateContext'
 import { getExpenses } from '@/services/expenses.service'
@@ -179,10 +179,21 @@ function downloadTaxPacketCsv(rows: TaxPacketRow[], filename: string) {
 // ─── Main Page ────────────────────────────────────────────────
 
 export default function TaxPage() {
+  const { user } = useAuth()
+  return <TaxWorkspace key={`${user?.id ?? 'signed-out'}:${user?.organization_id ?? ''}:${user?.account_type ?? ''}:${user?.role ?? ''}`} />
+}
+
+function TaxWorkspace() {
   const displayDate = useDisplayDate()
   const router = useRouter()
   const { user } = useAuth()
   const { hasCapability } = useAppState()
+  const mounted = useRef(false)
+  const loadVersion = useRef(0)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; loadVersion.current += 1 }
+  }, [])
   const [selectedYear,setSelectedYear]=useState(supportedTaxYear(CURRENT_YEAR)?CURRENT_YEAR:2026)
   const [reportCurrency,setReportCurrency]=useState('USD')
   const [basis,setBasis]=useState<IncomeBasis>('cash')
@@ -232,10 +243,14 @@ export default function TaxPage() {
   useEffect(() => { if(user)void loadData() }, [user?.id,user?.organization_id])
 
   const loadData = async () => {
+    if (!mounted.current || !user) return
+    const version = ++loadVersion.current
+    setLoading(true)
+    setFilings([])
+    setTaxExpenses([])
+    setTaxInvoices([])
     try {
       setError(null)
-      const yearStart = `${selectedYear}-01-01`
-      const yearEnd = `${selectedYear}-12-31`
       const [filingsData, expensesData, invoicesData] = await Promise.all([
         getTaxFilings(),
         getExpenses(),
@@ -244,15 +259,17 @@ export default function TaxPage() {
           organizationId: user?.organization_id,
         }),
       ])
+      if (!mounted.current || version !== loadVersion.current) return
       setFilings(filingsData)
       setTaxExpenses(expensesData)
       setTaxInvoices(invoicesData)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to load data'
+    } catch {
+      if (!mounted.current || version !== loadVersion.current) return
+      const msg = 'Could not load tax records. Check your access and try again.'
       setError(msg)
       toast.error(msg)
     } finally {
-      setLoading(false)
+      if (mounted.current && version === loadVersion.current) setLoading(false)
     }
   }
 

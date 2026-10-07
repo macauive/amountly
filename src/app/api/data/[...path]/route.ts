@@ -13,7 +13,7 @@ const exportTables = new Set(['invoice_line_items', 'invoice_payment_reversals']
 const commands = new Set(['bill_action', 'consume_ai_quota', 'create_invoice_from_time', 'create_money_record',
   'invoice_action', 'purchase_order_action', 'record_invoice_payment', 'reverse_invoice_payment',
   'review_legacy_payment', 'review_work_record', 'save_invoice', 'save_purchase_order', 'save_vendor_bill',
-  'seed_quarterly_estimates', 'set_own_account_type', 'set_own_preferences', 'vendor_bill_action'])
+  'seed_quarterly_estimates', 'set_expense_review', 'set_own_account_type', 'set_own_preferences', 'vendor_bill_action'])
 const responseHeaders = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }
 
 async function handle(request: Request, context: { params: Promise<{ path: string[] }> }) {
