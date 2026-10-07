@@ -1,9 +1,9 @@
 # Full Render migration
 
-Updated October 2, 2026. The user authorized moving Amountly web, database,
+Updated October 7, 2026. The user authorized moving Amountly web, database,
 authentication and receipts off hosted Vercel/Supabase to Render. Production
 now runs on Render at `https://amountly.app`, including the final database,
-authentication and private receipt storage. Both custom domains have valid TLS. Deployment branch: `codex/render-hosting`, baseline `1609b6a`.
+authentication and private receipt storage. Both custom domains have valid TLS. Deployment branch: `main`; the Render migration began from baseline `1609b6a` on `codex/render-hosting`.
 
 ## Implemented architecture
 

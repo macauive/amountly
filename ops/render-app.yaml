@@ -4,7 +4,7 @@ services:
   - type: web
     name: amountly
     runtime: docker
-    branch: codex/render-hosting
+    branch: main
     region: ohio
     plan: 0.5c-512mb
     numInstances: 1
