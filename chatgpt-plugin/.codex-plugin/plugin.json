@@ -1,7 +1,7 @@
 {
   "name": "amountly",
-  "version": "1.0.1",
-  "description": "Read-only financial reviews with supporting Amountly records.",
+  "version": "1.1.0",
+  "description": "Read-only financial check-ins, invoice balances, bills due and expense reviews.",
   "author": {
     "name": "Mac Digital",
     "email": "info@macdigital.ai",
@@ -59,7 +59,7 @@
               "description": "Find a partially paid overdue invoice.",
               "prompt": "Which of my USD invoices are overdue and still unpaid?",
               "tools_triggered": "list_unpaid_invoices",
-              "expected_behavior": "Return the synthetic 500 USD invoice with 100 USD recorded payment and a remaining balance of 400 USD; no reminders are sent."
+              "expected_behavior": "Return the synthetic overdue invoice with a remaining balance of 400 USD, its due date and supporting record link. Do not invent a payment ledger or send reminders."
             },
             {
               "description": "Find past-due obligations and bills due in the next seven days.",
@@ -106,7 +106,7 @@
         "countries": [
           "US"
         ],
-        "release_notes": "Initial read-only release with five financial tools, OAuth consent and revocation, scoped database access, bounded requests, minimal tool output and supporting record links."
+        "release_notes": "Adds focused invoice, bill and expense review skills alongside the combined financial review. Skills declare the existing Amountly MCP dependency and explain current balances, due-date horizons, receipt and comparison limits, supporting records and access failures. The five read-only tools, OAuth permissions and MCP endpoint are unchanged."
       }
     }
   }

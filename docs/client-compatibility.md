@@ -21,7 +21,7 @@ Repository references below are relative to `amountly-ios/alpha/`. Line numbers 
 | Clients/projects | `ClientRepository.swift:131`, `ProjectRepository.swift:79` delete rows | Referenced historical records are protected by foreign keys. Use archive fields and retain historical links. |
 | Team | `TeamRepository.swift:43–77` deletes members, changes roles and inserts invites directly | These flows are outside the certified release and can conflict with profile/membership protection. Keep administration unavailable until audited commands and role tests exist. |
 | Settings/onboarding | `Core/Services/AuthService.swift`, with pre-existing local changes | Retest profile creation, disabled users, role protections and one-workspace membership before certification. Preference patches should use `set_own_preferences`; established workspace reassignment requires a separate operation. |
-| Vendor bills / purchase orders | No corresponding repository or RPC calls found in this checkout | Do not infer support from the web's untracked historical `CHANGELOG-iOS.md`. Any future implementation must use the current command APIs and history. |
+| Vendor bills / purchase orders | No corresponding repository or RPC calls found in this checkout | Do not infer support from historical web changelogs. Any future implementation must use the current command APIs and history. |
 
 ## Required compatibility decision
 

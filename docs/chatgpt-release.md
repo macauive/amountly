@@ -74,3 +74,9 @@ Production discovery, domain verification, live tool checks, an accessible video
 walkthrough, reviewer credentials, metadata checks and final review submission
 must all succeed before reporting the app as submitted. Approval does not
 authorize automatic publication.
+
+The local 1.1.0 package adds focused invoice, bill and expense review skills and
+expands the existing combined-review skill. Each uses the same read-only MCP
+server and declares its dependency. This preparation does not change a submitted
+version or the server. See [the skills draft](chatgpt-skills.md) for behavior,
+validation and the allowlisted ZIP packager.
