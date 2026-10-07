@@ -2,6 +2,9 @@
 const nextConfig = {
   output: 'standalone',
   serverExternalPackages: ['pg', 'better-auth', 'nodemailer'],
+  outputFileTracingIncludes: {
+    '/api/ai/receipt': ['./scripts/receipt-pdf-worker.mjs', './node_modules/pdfjs-dist/legacy/build/*.mjs', './node_modules/pdfjs-dist/package.json'],
+  },
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {

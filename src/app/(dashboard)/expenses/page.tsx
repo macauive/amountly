@@ -48,12 +48,21 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
-import { Plus, Receipt, Pencil, Trash2, Loader2, DollarSign, Wand2, Upload } from 'lucide-react'
+import { Plus, Receipt, Pencil, Trash2, Loader2, Wand2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { format } from 'date-fns'
 import { dateInputValue } from '@/lib/date-format'
 import { useDisplayDate } from '@/hooks/useDisplayDate'
-import { captureExpenseFromText, captureReceiptDocumentFromText } from '@/lib/expense-ai'
+import { captureExpenseFromText, captureReceiptDocumentFromText, captureReceiptFromFile } from '@/lib/expense-ai'
+import { supportedReceiptCurrencies, type ReceiptFileCaptureResult } from '@/lib/ai/receipt-contract'
+import { expenseTotalsByCurrency, findPossibleReceiptDuplicate, isSupportedReceiptCurrency, receiptDraftIsComplete, receiptExpenseFields } from '@/lib/receipt-review'
+
+function formatExpenseAmount(amount: number, currency: string) {
+  if (!Number.isFinite(amount)) return 'Amount unavailable'
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency, currencyDisplay: 'code' }).format(amount)
+  } catch { return `${amount.toFixed(2)} (currency unavailable)` }
+}
 
 function getStatusVariant(status: ExpenseStatus): 'default' | 'secondary' | 'destructive' | 'outline' {
   switch (status) {
@@ -98,9 +107,17 @@ export default function ExpensesPage() {
   const [receiptText, setReceiptText] = useState('')
   const [receiptSummary, setReceiptSummary] = useState<string | null>(null)
   const [receiptFile, setReceiptFile] = useState<File | null>(null)
+  const [receiptFileInputKey, setReceiptFileInputKey] = useState(0)
+  const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null)
+  const [receiptFileResult, setReceiptFileResult] = useState<ReceiptFileCaptureResult | null>(null)
+  const [receiptSourceFile, setReceiptSourceFile] = useState<File | null>(null)
+  const [receiptReviewed, setReceiptReviewed] = useState(false)
+  const [extracting, setExtracting] = useState<'file' | 'receipt_text' | 'smart_text' | null>(null)
+  const extraction = useRef<{ version: number; controller: AbortController | null }>({ version: 0, controller: null })
 
   const [formData, setFormData] = useState({
     amount: '',
+    currency: 'USD',
     category: ExpenseCategory.other,
     description: '',
     merchant: '',
@@ -112,6 +129,18 @@ export default function ExpensesPage() {
   useEffect(() => {
     if (user) loadData()
   }, [user?.id, user?.organization_id])
+
+  useEffect(() => {
+    if (!dialogOpen || !receiptFile || !['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(receiptFile.type)) {
+      setReceiptPreviewUrl(null)
+      return
+    }
+    const url = URL.createObjectURL(receiptFile)
+    setReceiptPreviewUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [dialogOpen, receiptFile])
+
+  useEffect(() => () => { extraction.current.controller?.abort() }, [])
 
   const loadData = async () => {
     try {
@@ -136,12 +165,61 @@ export default function ExpensesPage() {
 
   const createAttempt = useCreateAttempt<Parameters<typeof createExpense>[0]>()
   const uploadedReceipt = useRef<{ file: File; path: string } | null>(null)
+
+  const cancelExtraction = () => {
+    extraction.current.controller?.abort()
+    extraction.current = { version: extraction.current.version + 1, controller: null }
+    setExtracting(null)
+  }
+  const resetReceiptReview = () => {
+    cancelExtraction()
+    setReceiptFileResult(null)
+    setReceiptSourceFile(null)
+    setReceiptReviewed(false)
+    setReceiptSummary(null)
+    setReceiptFileInputKey(previous => previous + 1)
+  }
+  const changeReceiptFile = (file: File | null) => {
+    cancelExtraction()
+    setReceiptReviewed(false)
+    setReceiptSummary(receiptFileResult ? 'The selected receipt changed. Review the existing draft or extract the new receipt before saving.' : null)
+    uploadedReceipt.current = null
+    setReceiptFile(file)
+    if (!file) setReceiptFileInputKey(previous => previous + 1)
+  }
+  const changeFormData = (patch: Partial<typeof formData>) => {
+    cancelExtraction()
+    setReceiptReviewed(false)
+    setFormData(current => ({ ...current, ...patch }))
+  }
+  const closeExpenseDialog = () => {
+    cancelExtraction()
+    setDialogOpen(false)
+  }
+  const beginExtraction = (kind: NonNullable<typeof extracting>) => {
+    if (extraction.current.controller || saving || createAttempt.unknown) return null
+    const current = { version: extraction.current.version + 1, controller: new AbortController() }
+    extraction.current = current
+    setExtracting(kind)
+    return current
+  }
+  const extractionIsCurrent = (current: { version: number; controller: AbortController }) =>
+    extraction.current.version === current.version && !current.controller.signal.aborted
+  const finishExtraction = (current: { version: number; controller: AbortController }) => {
+    if (extractionIsCurrent(current)) {
+      extraction.current.controller = null
+      setExtracting(null)
+    }
+  }
+
   const openCreateDialog = () => {
     if (!createAttempt.reset()) { setDialogOpen(true); return }
+    resetReceiptReview()
     uploadedReceipt.current = null
     setSelectedExpense(null)
     setFormData({
       amount: '',
+      currency: 'USD',
       category: ExpenseCategory.other,
       description: '',
       merchant: '',
@@ -159,10 +237,12 @@ export default function ExpensesPage() {
 
   const openEditDialog = (expense: Expense) => {
     if (!createAttempt.reset()) { setDialogOpen(true); return }
+    resetReceiptReview()
     uploadedReceipt.current = null
     setSelectedExpense(expense)
     setFormData({
       amount: expense.amount.toString(),
+      currency: isSupportedReceiptCurrency(expense.currency) ? expense.currency : '',
       category: expense.category,
       description: expense.description || '',
       merchant: expense.merchant || '',
@@ -180,7 +260,19 @@ export default function ExpensesPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (saving) return
+    if (saving || extraction.current.controller) return
+    if (!createAttempt.unknown && receiptFileResult && !receiptReviewed) {
+      toast.error('Review the extracted receipt and confirm the details before saving.')
+      return
+    }
+    if (!createAttempt.unknown && receiptFileResult && !receiptDraftIsComplete(formData)) {
+      toast.error('Confirm a valid amount, date, and supported currency from the receipt before saving.')
+      return
+    }
+    if (!createAttempt.unknown && !isSupportedReceiptCurrency(formData.currency)) {
+      toast.error('Choose the currency shown on the receipt before saving.')
+      return
+    }
     setSaving(true)
 
     try {
@@ -190,8 +282,8 @@ export default function ExpensesPage() {
       const receiptPath = receiptFile ? uploadedReceipt.current?.path : selectedExpense?.receipt_path
       const expenseData = {
         user_id: user?.id!,
-        amount: parseFloat(formData.amount),
-        currency: selectedExpense?.currency ?? 'USD',
+        amount: Number(formData.amount),
+        currency: formData.currency,
         category: formData.category,
         description: formData.description || undefined,
         merchant: formData.merchant || undefined,
@@ -209,7 +301,7 @@ export default function ExpensesPage() {
         await createAttempt.run(expenseData, createExpense)
         toast.success('Expense created')
       }
-      setDialogOpen(false)
+      closeExpenseDialog()
       loadData()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not confirm the save. Review the expense before trying again.')
@@ -232,12 +324,14 @@ export default function ExpensesPage() {
     }
   }
 
-  // Calculate total
-  const totalAmount = expenses.reduce((sum, expense) => sum + expense.amount, 0)
+  const currencyTotals = expenseTotalsByCurrency(expenses)
   const handleSmartCapture = async () => {
+    const current = beginExtraction('smart_text')
+    if (!current) return
     try {
       setSmartCaptureSummary('Asking Amountly AI...')
       const result = await captureExpenseFromText(smartCaptureText)
+      if (!extractionIsCurrent(current)) return
       const nextFormData = {
         ...formData,
         amount: result.amount ?? formData.amount,
@@ -248,6 +342,7 @@ export default function ExpensesPage() {
       }
 
       setFormData(nextFormData)
+      setReceiptReviewed(false)
       setSmartCaptureSummary(
         `Filled ${[
           result.amount ? 'amount' : null,
@@ -259,15 +354,19 @@ export default function ExpensesPage() {
           .join(', ')}.`
       )
     } catch (error) {
+      if (!extractionIsCurrent(current)) return
       const message = getErrorMessage(error, 'AI capture failed')
       setSmartCaptureSummary(message)
       toast.error(message)
-    }
+    } finally { finishExtraction(current) }
   }
   const handleReceiptExtraction = async () => {
+    const current = beginExtraction('receipt_text')
+    if (!current) return
     try {
       setReceiptSummary('Asking Amountly AI...')
       const result = await captureReceiptDocumentFromText(receiptText)
+      if (!extractionIsCurrent(current)) return
       setFormData({
         ...formData,
         amount: result.amount ?? formData.amount,
@@ -277,13 +376,45 @@ export default function ExpensesPage() {
         category: result.category,
         notes: result.notes ?? formData.notes,
       })
+      setReceiptReviewed(false)
       setReceiptSummary(result.summary)
     } catch (error) {
+      if (!extractionIsCurrent(current)) return
       const message = getErrorMessage(error, 'Receipt extraction failed')
       setReceiptSummary(message)
       toast.error(message)
-    }
+    } finally { finishExtraction(current) }
   }
+
+  const handleReceiptFileExtraction = async () => {
+    if (!receiptFile) return
+    const current = beginExtraction('file')
+    if (!current) return
+    setReceiptReviewed(false)
+    setReceiptSummary('Reading the selected receipt...')
+    try {
+      const result = await captureReceiptFromFile(receiptFile, current.controller.signal)
+      if (!extractionIsCurrent(current)) return
+      const fields = receiptExpenseFields(result)
+      if (!fields) {
+        setReceiptSummary('This looks like an invoice, statement, or another document. This feature reads receipts only. Enter an expense manually if appropriate.')
+        return
+      }
+      setFormData(previous => ({ ...previous, ...fields }))
+      setReceiptFileResult(result)
+      setReceiptSourceFile(receiptFile)
+      setSmartCaptureSummary(null)
+      setReceiptSummary(result.summary || 'Receipt fields are ready for your review.')
+    } catch (error) {
+      if (!extractionIsCurrent(current)) return
+      const message = getErrorMessage(error, 'Receipt extraction failed. You can enter the details manually.')
+      setReceiptSummary(message)
+      toast.error(message)
+    } finally { finishExtraction(current) }
+  }
+
+  const possibleReceiptDuplicate = receiptFileResult
+    ? findPossibleReceiptDuplicate(formData, expenses.filter(expense => expense.user_id === user?.id), selectedExpense?.id) : undefined
 
   if (loading) {
     return (
@@ -335,10 +466,12 @@ export default function ExpensesPage() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Total Amount</CardTitle>
+            <CardTitle className="text-sm font-medium">Total by Currency</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${totalAmount.toFixed(2)}</div>
+            <div className="space-y-1 text-2xl font-bold">
+              {currencyTotals.length ? currencyTotals.map(total => <div key={total.currency}>{formatExpenseAmount(total.amount, total.currency)}</div>) : 'No expenses'}
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -402,10 +535,7 @@ export default function ExpensesPage() {
                       {expense.description || '-'}
                     </TableCell>
                     <TableCell className="text-right font-medium">
-                      <span className="flex items-center justify-end gap-1">
-                        <DollarSign className="w-3 h-3" />
-                        {expense.amount.toFixed(2)}
-                      </span>
+                      {formatExpenseAmount(expense.amount, expense.currency)}
                     </TableCell>
                     <TableCell>
                       <Badge variant={getStatusVariant(expense.status)}>
@@ -449,8 +579,8 @@ export default function ExpensesPage() {
       )}
 
       {/* Create/Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={open => { if (!saving) setDialogOpen(open) }}>
-        <DialogContent className="max-w-lg">
+      <Dialog open={dialogOpen} onOpenChange={open => { if (!saving) { if (open) setDialogOpen(true); else closeExpenseDialog() } }}>
+        <DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {selectedExpense ? 'Edit Expense' : 'Add Expense'}
@@ -477,6 +607,7 @@ export default function ExpensesPage() {
                   </div>
                   <div className="space-y-3">
                     <Textarea
+                      disabled={!!extracting}
                       value={smartCaptureText}
                       onChange={(e) => {
                         setSmartCaptureText(e.target.value)
@@ -494,7 +625,7 @@ export default function ExpensesPage() {
                         variant="outline"
                         size="sm"
                         onClick={handleSmartCapture}
-                        disabled={!smartCaptureText.trim()}
+                        disabled={!!extracting || !smartCaptureText.trim()}
                         className="shrink-0 gap-2"
                       >
                         <Wand2 className="h-4 w-4" />
@@ -510,9 +641,9 @@ export default function ExpensesPage() {
                     <Receipt className="h-4 w-4" />
                   </div>
                   <div>
-                    <p className="text-sm font-medium">Receipt/document extraction</p>
+                    <p className="text-sm font-medium">Read a receipt</p>
                     <p className="text-sm text-muted-foreground">
-                      Attach a receipt and paste receipt text or OCR output for Amountly to extract the fields.
+                      Choose one receipt to fill an expense draft, then review the details before saving.
                     </p>
                   </div>
                 </div>
@@ -520,16 +651,53 @@ export default function ExpensesPage() {
                   <div className="space-y-2">
                     <Label htmlFor="receipt_file">Receipt file</Label>
                     <Input
+                      key={receiptFileInputKey}
                       id="receipt_file"
                       type="file"
-                      accept="image/*,.pdf"
-                      onChange={(e) => setReceiptFile(e.target.files?.[0] ?? null)}
+                      accept="image/jpeg,image/png,image/webp,application/pdf"
+                      onChange={(e) => changeReceiptFile(e.target.files?.[0] ?? null)}
                     />
                     <p className="text-xs text-muted-foreground">
-                      {receiptFile ? `${receiptFile.name} will be attached when you save.` : (selectedExpense?.receipt_path || selectedExpense?.receipt_url) ? 'Existing receipt will stay attached unless replaced.' : 'Optional image or PDF attachment.'}
+                      {receiptFile ? `${receiptFile.name} will be attached when you save.` : (selectedExpense?.receipt_path || selectedExpense?.receipt_url) ? 'Existing receipt will stay attached unless replaced.' : 'JPEG, PNG, WebP, or PDF. Up to 10 MB; PDFs up to 5 pages.'}
                     </p>
                   </div>
+                  {receiptPreviewUrl && receiptFile && (
+                    receiptFile.type === 'application/pdf'
+                      ? <a href={receiptPreviewUrl} download="receipt.pdf" className="inline-block text-sm underline">Download selected PDF to review</a>
+                      : <img src={receiptPreviewUrl} alt="Selected receipt preview" className="max-h-40 w-full rounded border object-contain" />
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Extracting sends the selected receipt to OpenAI for processing. Check the amount, currency, date, and category against the original. AI can make mistakes.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={handleReceiptFileExtraction} disabled={!receiptFile || !!extracting} className="gap-2">
+                      {extracting === 'file' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                      {extracting === 'file' ? 'Reading receipt...' : 'Extract selected receipt'}
+                    </Button>
+                    {receiptFile && <Button type="button" variant="ghost" size="sm" onClick={() => changeReceiptFile(null)}>Remove selected file</Button>}
+                    {extracting && <Button type="button" variant="ghost" size="sm" onClick={() => { cancelExtraction(); setReceiptSummary('Extraction cancelled. You can retry or enter the details manually.') }}>Cancel extraction</Button>}
+                  </div>
+                  <p className="text-xs text-muted-foreground" role="status" aria-live="polite">
+                    {receiptSummary || 'The receipt is attached to an expense only when you save.'}
+                  </p>
+                  {receiptFileResult && (
+                    <div className="space-y-2 rounded border p-3">
+                      <p className="text-xs text-muted-foreground">
+                        Last receipt extraction confidence: {receiptFileResult.confidence}. {receiptFileResult.reason}
+                      </p>
+                      {receiptSourceFile !== receiptFile && <p className="text-xs text-amber-700 dark:text-amber-400">The attachment changed after extraction. These values came from the previous receipt. Extract the new receipt or review every field and confirm that the attachment belongs to this expense.</p>}
+                      {(!formData.amount || !formData.expense_date || !formData.currency) && <p className="text-xs text-amber-700 dark:text-amber-400">Some details could not be confirmed. Fill the blank amount, date, or currency from the receipt.</p>}
+                      {possibleReceiptDuplicate && <p className="text-xs text-amber-700 dark:text-amber-400" role="status">Possible duplicate: an existing expense has the same merchant, date, amount, and currency. Review your list before saving. This check may not identify all duplicates.</p>}
+                      <label className="flex items-start gap-2 text-sm" htmlFor="receipt_reviewed">
+                        <input id="receipt_reviewed" type="checkbox" checked={receiptReviewed} disabled={!!extracting} onChange={e => setReceiptReviewed(e.target.checked)} className="mt-1" />
+                        <span>I reviewed the draft against my receipt and confirmed the details and any selected attachment.</span>
+                      </label>
+                    </div>
+                  )}
+                  <Label htmlFor="receipt_text">Or paste receipt text</Label>
                   <Textarea
+                    id="receipt_text"
+                    disabled={!!extracting}
                     value={receiptText}
                     onChange={(e) => {
                       setReceiptText(e.target.value)
@@ -539,19 +707,17 @@ export default function ExpensesPage() {
                     rows={4}
                   />
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-xs text-muted-foreground">
-                      {receiptSummary || 'Amountly looks for merchant, date, total, and category signals.'}
-                    </p>
+                    <p className="text-xs text-muted-foreground">Pasted text remains available for receipts you have already transcribed.</p>
                     <Button
                       type="button"
                       variant="outline"
                       size="sm"
                       onClick={handleReceiptExtraction}
-                      disabled={!receiptText.trim()}
+                      disabled={!!extracting || !receiptText.trim()}
                       className="shrink-0 gap-2"
                     >
                       <Upload className="h-4 w-4" />
-                      Extract receipt
+                      Extract pasted receipt
                     </Button>
                   </div>
                 </div>
@@ -563,16 +729,20 @@ export default function ExpensesPage() {
                     id="amount"
                     type="number"
                     step="0.01"
+                    min="0.01"
+                    max="99999999.99"
                     value={formData.amount}
-                    onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                    disabled={!!extracting}
+                    onChange={(e) => changeFormData({ amount: e.target.value })}
                     required
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="category">Category *</Label>
                   <Select
+                    disabled={!!extracting}
                     value={formData.category}
-                    onValueChange={(value) => setFormData({ ...formData, category: value as ExpenseCategory })}
+                    onValueChange={(value) => changeFormData({ category: value as ExpenseCategory })}
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -587,6 +757,15 @@ export default function ExpensesPage() {
                   </Select>
                 </div>
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="expense_currency">Currency *</Label>
+                <Select name="expense_currency" value={formData.currency} required disabled={!!extracting} onValueChange={value => changeFormData({ currency: value })}>
+                  <SelectTrigger id="expense_currency"><SelectValue placeholder="Choose the receipt currency" /></SelectTrigger>
+                  <SelectContent>
+                    {supportedReceiptCurrencies.map(currency => <SelectItem key={currency} value={currency}>{currency}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="expense_date">Date *</Label>
@@ -594,7 +773,8 @@ export default function ExpensesPage() {
                     id="expense_date"
                     type="date"
                     value={formData.expense_date}
-                    onChange={(e) => setFormData({ ...formData, expense_date: e.target.value })}
+                    disabled={!!extracting}
+                    onChange={(e) => changeFormData({ expense_date: e.target.value })}
                     required
                   />
                 </div>
@@ -603,7 +783,8 @@ export default function ExpensesPage() {
                   <Input
                     id="merchant"
                     value={formData.merchant}
-                    onChange={(e) => setFormData({ ...formData, merchant: e.target.value })}
+                    disabled={!!extracting}
+                    onChange={(e) => changeFormData({ merchant: e.target.value })}
                     placeholder="e.g., Amazon, Uber"
                   />
                 </div>
@@ -611,8 +792,9 @@ export default function ExpensesPage() {
               <div className="space-y-2">
                 <Label htmlFor="project">Project (optional)</Label>
                 <Select
+                  disabled={!!extracting}
                   value={formData.project_id}
-                  onValueChange={(value) => setFormData({ ...formData, project_id: value })}
+                  onValueChange={(value) => changeFormData({ project_id: value })}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select a project" />
@@ -631,7 +813,8 @@ export default function ExpensesPage() {
                 <Input
                   id="description"
                   value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  disabled={!!extracting}
+                  onChange={(e) => changeFormData({ description: e.target.value })}
                   placeholder="Brief description of the expense"
                 />
               </div>
@@ -640,16 +823,17 @@ export default function ExpensesPage() {
                 <Textarea
                   id="notes"
                   value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                  disabled={!!extracting}
+                  onChange={(e) => changeFormData({ notes: e.target.value })}
                   rows={2}
                 />
               </div>
             </fieldset>
             <DialogFooter>
-              <Button type="button" variant="outline" disabled={saving} onClick={() => { setDialogOpen(false); if (createAttempt.unknown) void loadData() }}>
+              <Button type="button" variant="outline" disabled={saving} onClick={() => { closeExpenseDialog(); if (createAttempt.unknown) void loadData() }}>
                 {createAttempt.unknown ? 'Close and review list' : 'Cancel'}
               </Button>
-              <Button type="submit" disabled={saving}>
+              <Button type="submit" disabled={saving || !!extracting || (!createAttempt.unknown && !!receiptFileResult && !receiptReviewed)}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {createAttempt.unknown ? 'Retry original save' : selectedExpense ? 'Save Changes' : 'Add Expense'}
               </Button>
