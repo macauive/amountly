@@ -1,9 +1,15 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import Link from 'next/link'
+import { ReceiptDocument } from '@/components/ReceiptDocument'
+import { CaptureDraftInbox } from '@/components/CaptureDraftInbox'
+import { captureFieldsSchema, type CaptureDraft } from '@/lib/capture-drafts'
+import { keepCapture, getCaptureFile, getCaptureDrafts, discardCapture } from '@/services/capture-drafts.service'
+import { usesRenderBackend } from '@/lib/platform/config'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { getExpenses, createExpense, updateExpense, archiveExpense, uploadReceipt, getReceiptUrl } from '@/services/expenses.service'
+import { getExpenses, createExpense, updateExpense, archiveExpense, uploadReceipt } from '@/services/expenses.service'
 import { RecordSaveError, setExpenseReview } from '@/services/review.service'
 import { useCreateAttempt } from '@/hooks/useCreateAttempt'
 import { SaveAttemptNotice } from '@/components/SaveAttemptNotice'
@@ -55,10 +61,10 @@ import { toast } from 'sonner'
 import { format } from 'date-fns'
 import { dateInputValue } from '@/lib/date-format'
 import { useDisplayDate } from '@/hooks/useDisplayDate'
-import { captureExpenseFromText, captureReceiptDocumentFromText, captureReceiptFromFile } from '@/lib/expense-ai'
+import { captureReceiptDocumentFromText, captureReceiptFromFile } from '@/lib/expense-ai'
 import { supportedReceiptCurrencies, type ReceiptFileCaptureResult } from '@/lib/ai/receipt-contract'
 import { expenseTotalsByCurrency, findPossibleReceiptDuplicate, isSupportedReceiptCurrency, receiptDraftIsComplete, receiptExpenseFields } from '@/lib/receipt-review'
-import { expenseNavigation, expenseNeedsReview, filterExpenseList, validExpenseFilterDate } from '@/lib/expense-navigation'
+import { expenseNavigation, expenseFilterHref, expenseNeedsReview, filterExpenseList, validExpenseFilterDate } from '@/lib/expense-navigation'
 
 function formatExpenseAmount(amount: number, currency: string) {
   if (!Number.isFinite(amount)) return 'Amount unavailable'
@@ -106,12 +112,12 @@ function ExpensesWorkspace() {
   const queryString = useSearchParams()?.toString() ?? ''
   const navigation = expenseNavigation(new URLSearchParams(queryString))
   const isSolo = user?.account_type === 'freelancer'
-  const [search, setSearch] = useState('')
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [search, setSearch] = useState(navigation.filters.query)
+  const [startDate, setStartDate] = useState(navigation.filters.start)
+  const [endDate, setEndDate] = useState(navigation.filters.end)
+  const [categoryFilter, setCategoryFilter] = useState(navigation.filters.category)
   const [statusFilter, setStatusFilter] = useState(navigation.status)
-  const [reviewFilter, setReviewFilter] = useState('all')
+  const [reviewFilter, setReviewFilter] = useState(navigation.filters.review)
   const [linkError, setLinkError] = useState<string | null>(null)
   const handledLink = useRef<string | null>(null)
   const receiptInput = useRef<HTMLInputElement>(null)
@@ -132,13 +138,17 @@ function ExpensesWorkspace() {
   const reviewOperation = useRef(false)
   const [historyId,setHistoryId]=useState<string|null>(null)
   const [saving, setSaving] = useState(false)
-  const [smartCaptureText, setSmartCaptureText] = useState('')
-  const [smartCaptureSummary, setSmartCaptureSummary] = useState<string | null>(null)
   const [receiptText, setReceiptText] = useState('')
   const [receiptSummary, setReceiptSummary] = useState<string | null>(null)
   const [receiptFile, setReceiptFile] = useState<File | null>(null)
   const [receiptFileInputKey, setReceiptFileInputKey] = useState(0)
-  const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null)
+  const [captureMethod, setCaptureMethod] = useState<'file'|'text'|'manual'>('file')
+  const [captureExtracted, setCaptureExtracted] = useState(false)
+  const [activeCapture, setActiveCapture] = useState<{id:string;revision:number}|null>(null)
+  const [captureBusy, setCaptureBusy] = useState(false)
+  const captureOperation = useRef(false)
+  const [captureVersion, setCaptureVersion] = useState(0)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const [receiptFileResult, setReceiptFileResult] = useState<ReceiptFileCaptureResult | null>(null)
   const [receiptSourceFile, setReceiptSourceFile] = useState<File | null>(null)
   const [receiptReviewed, setReceiptReviewed] = useState(false)
@@ -167,22 +177,25 @@ function ExpensesWorkspace() {
     setExpenses([])
     setProjects([])
     setDialogOpen(false)
+    setActiveCapture(null);setReceiptFile(null);setReceiptFileResult(null);setReceiptSourceFile(null);setReceiptText('');setReceiptReviewed(false);setCaptureExtracted(false)
+    setFormData({amount:'',currency:'USD',category:ExpenseCategory.other,description:'',merchant:'',expense_date:format(new Date(),'yyyy-MM-dd'),project_id:'',notes:''})
     cancelExtraction()
     setLoading(true)
     if (user) void loadData()
     return () => { loadVersion.current++ }
   }, [user?.id, user?.organization_id])
 
-  useEffect(() => { setStatusFilter(navigation.status) }, [navigation.status])
   useEffect(() => {
-    if (!dialogOpen || !receiptFile || !['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(receiptFile.type)) {
-      setReceiptPreviewUrl(null)
-      return
-    }
-    const url = URL.createObjectURL(receiptFile)
-    setReceiptPreviewUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [dialogOpen, receiptFile])
+    setStatusFilter(navigation.status); setSearch(navigation.filters.query)
+    setStartDate(navigation.filters.start); setEndDate(navigation.filters.end)
+    setCategoryFilter(navigation.filters.category); setReviewFilter(navigation.filters.review)
+  }, [queryString])
+  const updateFilters = (patch: Partial<Parameters<typeof expenseFilterHref>[0]>) => {
+    const next={query:search,start:startDate,end:endDate,category:categoryFilter,status:statusFilter,review:reviewFilter,...patch}
+    const href=expenseFilterHref(next)
+    if(navigation.returnTo!=='/expenses') router.replace(href+(href.includes('?')?'&':'?')+'returnTo='+encodeURIComponent(navigation.returnTo),{scroll:false})
+    else router.replace(href,{scroll:false})
+  }
 
   const loadData = async () => {
     if (!mounted.current) return
@@ -223,6 +236,7 @@ function ExpensesWorkspace() {
   const resetReceiptReview = () => {
     cancelExtraction()
     setReceiptFileResult(null)
+    setCaptureExtracted(false)
     setReceiptSourceFile(null)
     setReceiptReviewed(false)
     setReceiptSummary(null)
@@ -247,7 +261,7 @@ function ExpensesWorkspace() {
     setDialogOpen(false)
   }
   const beginExtraction = (kind: NonNullable<typeof extracting>) => {
-    if (extraction.current.controller || saving || createAttempt.unknown) return null
+    if (extraction.current.controller || saving || captureOperation.current || createAttempt.unknown) return null
     const current = { version: extraction.current.version + 1, controller: new AbortController() }
     extraction.current = current
     setExtracting(kind)
@@ -272,7 +286,7 @@ function ExpensesWorkspace() {
   }
 
   const openCreateDialog = () => {
-    if (reviewOperation.current || saving) return
+    if (reviewOperation.current || saving || captureOperation.current) return
     if (!createAttempt.reset()) { setDialogOpen(true); return }
     resetReceiptReview()
     uploadedReceipt.current = null
@@ -287,8 +301,9 @@ function ExpensesWorkspace() {
       project_id: '',
       notes: '',
     })
-    setSmartCaptureText('')
-    setSmartCaptureSummary(null)
+    setActiveCapture(null)
+    setCaptureMethod('file')
+    setDetailsOpen(false)
     setReceiptText('')
     setReceiptSummary(null)
     setReceiptFile(null)
@@ -296,7 +311,7 @@ function ExpensesWorkspace() {
   }
 
   const openEditDialog = (expense: Expense) => {
-    if (reviewOperation.current || saving) return
+    if (reviewOperation.current || saving || captureOperation.current) return
     if (!createAttempt.reset()) { setDialogOpen(true); return }
     resetReceiptReview()
     uploadedReceipt.current = null
@@ -311,12 +326,53 @@ function ExpensesWorkspace() {
       project_id: expense.project_id || '',
       notes: expense.notes || '',
     })
-    setSmartCaptureText('')
-    setSmartCaptureSummary(null)
+    setActiveCapture(null)
+    setCaptureMethod('manual')
+    setDetailsOpen(false)
     setReceiptText('')
     setReceiptSummary(null)
     setReceiptFile(null)
     setDialogOpen(true)
+  }
+
+  const resumeCapture = async (draft: CaptureDraft) => {
+    if (saving || reviewSaving || captureOperation.current || dialogOpen || createAttempt.unknown) {
+      toast.error('Finish or close the current expense before resuming a capture.'); return
+    }
+    if (expenses.some(row=>row.id===draft.id)) {
+      toast.message('This capture already has a saved expense. Open that expense to review it.'); return
+    }
+    const scope=`${user?.id}:${user?.organization_id??''}`
+    captureOperation.current=true;setCaptureBusy(true)
+    try {
+      const file=await getCaptureFile(draft)
+      if(!mounted.current || loadedScope.current!==scope)return
+      resetReceiptReview();uploadedReceipt.current=null;setSelectedExpense(null)
+      setActiveCapture({id:draft.id,revision:draft.revision})
+      setFormData(draft.payload.fields);setReceiptText(draft.payload.text)
+      setCaptureMethod(draft.payload.method);setReceiptFile(file)
+      setReceiptFileResult(draft.payload.extraction);setReceiptSourceFile(file)
+      setCaptureExtracted(draft.payload.extracted);setReceiptReviewed(false)
+      setReceiptSummary(draft.payload.extracted?'Restored proposal. Check its fields and original again before saving.':null)
+      setDetailsOpen(!!draft.payload.fields.project_id||!!draft.payload.fields.notes)
+      setDialogOpen(true)
+    } catch(failure){if(mounted.current&&loadedScope.current===scope)toast.error(getErrorMessage(failure,'Could not resume capture.'))}
+    finally{captureOperation.current=false;if(mounted.current)setCaptureBusy(false)}
+  }
+  const keepForLater = async () => {
+    if(selectedExpense || saving || reviewSaving || extracting || captureOperation.current || createAttempt.unknown)return
+    const scope=`${user?.id}:${user?.organization_id??''}`
+    const capture=activeCapture??{id:crypto.randomUUID(),revision:0}
+    setActiveCapture(capture);captureOperation.current=true;setCaptureBusy(true)
+    try {
+      const draft=await keepCapture({...capture,payload:{method:captureMethod,fields:captureFieldsSchema.parse(formData),text:receiptText,
+        extraction:receiptSourceFile===receiptFile?receiptFileResult:null,
+        extracted:captureExtracted || !!receiptFileResult}},receiptFile)
+      if(!mounted.current||loadedScope.current!==scope)return
+      setActiveCapture({id:draft.id,revision:draft.revision});setCaptureVersion(v=>v+1)
+      closeExpenseDialog();toast.success('Capture kept privately. No expense was recorded.')
+    } catch(failure){if(mounted.current&&loadedScope.current===scope)toast.error(getErrorMessage(failure,'Could not keep capture.'))}
+    finally{captureOperation.current=false;if(mounted.current)setCaptureBusy(false)}
   }
 
   useEffect(() => {
@@ -327,6 +383,9 @@ function ExpensesWorkspace() {
     if (navigation.invalid) {
       setLinkError('This expense link is invalid. Choose an expense from the list.')
       return
+    }
+    if (navigation.captureId) {
+      void getCaptureDrafts().then(drafts=>{const draft=drafts.find(d=>d.id===navigation.captureId);if(draft)void resumeCapture(draft);else setLinkError('This capture is unavailable. Choose one from the inbox.')}).catch(()=>setLinkError('Could not open this capture. Try again.'))
     }
     if (navigation.expenseId || navigation.uploadReceipt) {
       setLinkError(null)
@@ -344,8 +403,7 @@ function ExpensesWorkspace() {
       const params = new URLSearchParams(queryString)
       params.delete('expense')
       params.delete('action')
-      const status = expenseNavigation(params).status
-      router.replace(status === 'all' ? '/expenses' : `/expenses?status=${encodeURIComponent(status)}`, { scroll: false })
+      router.replace('/expenses'+(params.size?'?'+params.toString():''), { scroll: false })
     }
   }, [queryString, loading, error, user?.id, user?.organization_id, expenses])
 
@@ -382,8 +440,8 @@ function ExpensesWorkspace() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (saving || reviewOperation.current || readOnlyExpense || extraction.current.controller) return
-    if (!createAttempt.unknown && receiptFileResult && !receiptReviewed) {
+    if (saving || reviewOperation.current || readOnlyExpense || extraction.current.controller || captureOperation.current) return
+    if (!createAttempt.unknown && (receiptFileResult || captureExtracted) && !receiptReviewed) {
       toast.error('Review the extracted receipt and confirm the details before saving.')
       return
     }
@@ -422,9 +480,14 @@ function ExpensesWorkspace() {
         if (!mounted.current) return
         toast.success('Expense updated')
       } else {
-        await createAttempt.run(expenseData, createExpense)
+        await createAttempt.run(expenseData, (input,id)=>createExpense(input,activeCapture?.id??id))
         if (!mounted.current) return
         toast.success('Expense created')
+      }
+      if(activeCapture){
+        try{await discardCapture(activeCapture.id,activeCapture.revision)}
+        catch{toast.message('Expense saved. Its kept capture could not be removed; reopening it will not create a second expense.')}
+        setCaptureVersion(v=>v+1)
       }
       closeExpenseDialog()
       loadData()
@@ -453,41 +516,6 @@ function ExpensesWorkspace() {
   }
 
   const currencyTotals = expenseTotalsByCurrency(expenses)
-  const handleSmartCapture = async () => {
-    const current = beginExtraction('smart_text')
-    if (!current) return
-    try {
-      setSmartCaptureSummary('Asking Amountly AI...')
-      const result = await captureExpenseFromText(smartCaptureText)
-      if (!extractionIsCurrent(current)) return
-      const nextFormData = {
-        ...formData,
-        amount: result.amount ?? formData.amount,
-        merchant: result.merchant ?? formData.merchant,
-        description: result.description ?? formData.description,
-        expense_date: result.expense_date ?? formData.expense_date,
-        category: result.category,
-      }
-
-      setFormData(nextFormData)
-      setReceiptReviewed(false)
-      setSmartCaptureSummary(
-        `Filled ${[
-          result.amount ? 'amount' : null,
-          result.merchant ? 'merchant' : null,
-          result.expense_date ? 'date' : null,
-          'category',
-        ]
-          .filter(Boolean)
-          .join(', ')}.`
-      )
-    } catch (error) {
-      if (!extractionIsCurrent(current)) return
-      const message = getErrorMessage(error, 'AI capture failed')
-      setSmartCaptureSummary(message)
-      toast.error(message)
-    } finally { finishExtraction(current) }
-  }
   const handleReceiptExtraction = async () => {
     const current = beginExtraction('receipt_text')
     if (!current) return
@@ -505,6 +533,8 @@ function ExpensesWorkspace() {
         notes: result.notes ?? formData.notes,
       })
       setReceiptReviewed(false)
+      setCaptureExtracted(true)
+      setReceiptFileResult(null);setReceiptSourceFile(null)
       setReceiptSummary(result.summary)
     } catch (error) {
       if (!extractionIsCurrent(current)) return
@@ -531,7 +561,7 @@ function ExpensesWorkspace() {
       setFormData(previous => ({ ...previous, ...fields }))
       setReceiptFileResult(result)
       setReceiptSourceFile(receiptFile)
-      setSmartCaptureSummary(null)
+      setCaptureExtracted(true)
       setReceiptSummary(result.summary || 'Receipt fields are ready for your review.')
     } catch (error) {
       if (!extractionIsCurrent(current)) return
@@ -543,7 +573,7 @@ function ExpensesWorkspace() {
 
   const possibleReceiptDuplicate = receiptFileResult
     ? findPossibleReceiptDuplicate(formData, expenses.filter(expense => expense.user_id === user?.id), selectedExpense?.id) : undefined
-  const filteredExpenses = filterExpenseList(expenses, { query: search, start: startDate, end: endDate, category: categoryFilter, status: statusFilter, review: isSolo ? reviewFilter : 'all' })
+  const filteredExpenses = navigation.invalid ? [] : filterExpenseList(expenses, { query: search, start: startDate, end: endDate, category: categoryFilter, status: statusFilter, review: isSolo ? reviewFilter : 'all' })
   const invalidDateRange = (!!startDate && !validExpenseFilterDate(startDate)) || (!!endDate && !validExpenseFilterDate(endDate)) || (!!startDate && !!endDate && startDate > endDate)
   const clearFilters = () => { setSearch(''); setStartDate(''); setEndDate(''); setCategoryFilter('all'); setStatusFilter('all'); setReviewFilter('all'); setLinkError(null); router.replace('/expenses', { scroll: false }) }
 
@@ -619,16 +649,18 @@ function ExpensesWorkspace() {
         </Card>
       </div>
 
+      {navigation.returnTo!=='/expenses'&&<Link href={navigation.returnTo} className="text-sm underline">Back to results</Link>}
+      <CaptureDraftInbox onResume={draft=>void resumeCapture(draft)} refreshKey={captureVersion}/>
       <Card>
         <CardHeader><CardTitle className="text-base">Find expenses</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className={`grid gap-3 sm:grid-cols-2 ${isSolo ? 'lg:grid-cols-3 xl:grid-cols-6' : 'lg:grid-cols-5'}`}>
-            <div className="space-y-1"><Label htmlFor="expense_search">Merchant or description</Label><Input id="expense_search" maxLength={100} value={search} onChange={e => setSearch(e.target.value.slice(0, 100))} placeholder="Search expenses" /></div>
-            <div className="space-y-1"><Label htmlFor="expense_start">From</Label><Input id="expense_start" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></div>
-            <div className="space-y-1"><Label htmlFor="expense_end">Through</Label><Input id="expense_end" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} /></div>
-            <div className="space-y-1"><Label htmlFor="expense_category_filter">Category</Label><Select value={categoryFilter} onValueChange={setCategoryFilter}><SelectTrigger id="expense_category_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All categories</SelectItem>{Object.entries(expenseCategoryLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
-            <div className="space-y-1"><Label htmlFor="expense_status_filter">Status</Label><Select value={statusFilter} onValueChange={value => { setStatusFilter(value); router.replace(value === 'all' ? '/expenses' : `/expenses?status=${encodeURIComponent(value)}`, { scroll: false }) }}><SelectTrigger id="expense_status_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem>{Object.entries(expenseStatusLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
-            {isSolo && <div className="space-y-1"><Label htmlFor="expense_review_filter">Review</Label><Select value={reviewFilter} onValueChange={setReviewFilter}><SelectTrigger id="expense_review_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All review states</SelectItem><SelectItem value="needs-review">Needs review</SelectItem><SelectItem value="reviewed">Reviewed</SelectItem></SelectContent></Select></div>}
+            <div className="space-y-1"><Label htmlFor="expense_search">Merchant or description</Label><Input id="expense_search" maxLength={100} value={search} onChange={e => updateFilters({query:e.target.value.slice(0,100)})} placeholder="Search expenses" /></div>
+            <div className="space-y-1"><Label htmlFor="expense_start">From</Label><Input id="expense_start" type="date" value={startDate} onChange={e => updateFilters({start:e.target.value})} /></div>
+            <div className="space-y-1"><Label htmlFor="expense_end">Through</Label><Input id="expense_end" type="date" value={endDate} onChange={e => updateFilters({end:e.target.value})} /></div>
+            <div className="space-y-1"><Label htmlFor="expense_category_filter">Category</Label><Select value={categoryFilter} onValueChange={value=>updateFilters({category:value})}><SelectTrigger id="expense_category_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All categories</SelectItem>{Object.entries(expenseCategoryLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+            <div className="space-y-1"><Label htmlFor="expense_status_filter">Status</Label><Select value={statusFilter} onValueChange={value=>updateFilters({status:value})}><SelectTrigger id="expense_status_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem>{Object.entries(expenseStatusLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+            {isSolo && <div className="space-y-1"><Label htmlFor="expense_review_filter">Review</Label><Select value={reviewFilter} onValueChange={value=>updateFilters({review:value})}><SelectTrigger id="expense_review_filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All review states</SelectItem><SelectItem value="needs-review">Needs review</SelectItem><SelectItem value="reviewed">Reviewed</SelectItem></SelectContent></Select></div>}
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm text-muted-foreground" role="status">Showing {filteredExpenses.length} of {expenses.length} expenses. Summary totals include all expenses.</p><Button variant="ghost" size="sm" onClick={clearFilters}>Clear filters</Button></div>
           {invalidDateRange && <p className="text-sm text-destructive" role="alert">Choose valid dates with the end on or after the start.</p>}
@@ -695,10 +727,7 @@ function ExpensesWorkspace() {
                     </TableCell>
                     <TableCell className="text-right">
                       <Button variant="ghost" size="sm" onClick={()=>setHistoryId(expense.id)}>History</Button>
-                      {(expense.receipt_path || expense.receipt_url) && <Button variant="ghost" size="sm" onClick={async () => {
-                        try { const url = await getReceiptUrl(expense); if (mounted.current) window.open(url, '_blank', 'noopener,noreferrer') }
-                        catch { if (mounted.current) toast.error('Could not open receipt. Check your access and try again.') }
-                      }}>Receipt</Button>}
+                      {(expense.receipt_path || expense.receipt_url) && <Button variant="ghost" size="sm" onClick={()=>openEditDialog(expense)}>Receipt</Button>}
                       {canReviewSavedExpense(expense) && <Button variant="outline" size="sm" disabled={reviewActionDisabled} onClick={() => requestExpenseReview(expense)}>{expense.reviewed_at ? 'Clear review' : 'Mark reviewed'}</Button>}
                       <Button
                         variant="ghost"
@@ -732,7 +761,7 @@ function ExpensesWorkspace() {
 
       {/* Create/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={open => { if (!saving && !reviewSaving) { if (open) setDialogOpen(true); else closeExpenseDialog() } }}>
-        <DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto" onOpenAutoFocus={event => {
+        <DialogContent className="sm:max-w-5xl max-h-[90dvh] overflow-y-auto" onOpenAutoFocus={event => {
           if (focusReceipt.current && receiptInput.current) {
             event.preventDefault()
             focusReceipt.current = false
@@ -747,149 +776,34 @@ function ExpensesWorkspace() {
               {selectedExpense ? readOnlyExpense ? 'View the recorded expense. This record cannot be edited.' : 'Update expense details' : 'Record a new expense'}
             </DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleSubmit}>
+          <div className={`grid min-w-0 gap-5 ${receiptFile || selectedExpense?.receipt_path || selectedExpense?.receipt_url ? 'lg:grid-cols-2' : ''}`}>
+            {receiptFile ? <ReceiptDocument source={{file:receiptFile}}/> : selectedExpense&&(selectedExpense.receipt_path||selectedExpense.receipt_url)?<ReceiptDocument source={{expense:selectedExpense}}/>:null}
+          <form onSubmit={handleSubmit} className="min-w-0">
             <SaveAttemptNotice message={createAttempt.message} />
-            {selectedExpense && (selectedExpense.receipt_path || selectedExpense.receipt_url) && <Button type="button" variant="outline" onClick={async () => {
-              try { const url = await getReceiptUrl(selectedExpense); if (mounted.current) window.open(url, '_blank', 'noopener,noreferrer') }
-              catch { if (mounted.current) toast.error('Could not open receipt. Check your access and try again.') }
-            }}>Open saved receipt</Button>}
             {isSolo && selectedExpense && (selectedExpense.reviewed_at || ['DRAFT', 'REJECTED'].includes(selectedExpense.status)) && <div className="mt-3 space-y-2 rounded border p-3">
               <Badge variant={selectedExpense.reviewed_at ? 'secondary' : 'outline'}>{selectedExpense.reviewed_at ? 'Reviewed' : 'Needs review'}</Badge>
               {canReviewSavedExpense(selectedExpense) && <Button type="button" variant="outline" className="ml-2" disabled={reviewActionDisabled} onClick={() => requestExpenseReview(selectedExpense)}>{selectedExpense.reviewed_at ? 'Clear review' : 'Mark reviewed'}</Button>}
               <p className="text-sm text-muted-foreground">{selectedExpenseDirty ? 'Save your changes before reviewing this expense.' : 'Review the saved details and receipt. Changes to the expense require another review.'}</p>
             </div>}
-            <fieldset disabled={saving || reviewSaving || createAttempt.unknown || readOnlyExpense} className="grid gap-4 py-4">
-              {!selectedExpense && (
-                <div className="rounded-lg border bg-primary/5 p-3">
-                  <div className="mb-3 flex items-start gap-3">
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                      <Wand2 className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium">Smart capture</p>
-                      <p className="text-sm text-muted-foreground">
-                        Paste a receipt line or describe the expense and Amountly will prefill what it can.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    <Textarea
-                      disabled={!!extracting}
-                      value={smartCaptureText}
-                      onChange={(e) => {
-                        setSmartCaptureText(e.target.value)
-                        setSmartCaptureSummary(null)
-                      }}
-                      placeholder="Example: Starbucks $12.48 coffee with client yesterday"
-                      rows={2}
-                    />
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <p className="text-xs text-muted-foreground">
-                        {smartCaptureSummary || 'Amountly looks for amount, merchant, date, and category signals.'}
-                      </p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={handleSmartCapture}
-                        disabled={!!extracting || !smartCaptureText.trim()}
-                        className="shrink-0 gap-2"
-                      >
-                        <Wand2 className="h-4 w-4" />
-                        Extract details
-                      </Button>
-                    </div>
-                  </div>
+            <fieldset disabled={saving || reviewSaving || captureBusy || createAttempt.unknown || readOnlyExpense} className="grid gap-4 py-4">
+              {!readOnlyExpense && <>
+                <div className="flex flex-wrap gap-2" aria-label="Capture method">
+                  {([['file','Receipt file'],['text','Paste text'],['manual','Manual entry']] as const).map(([method,label])=><Button key={method} type="button" variant={captureMethod===method?'default':'outline'} aria-pressed={captureMethod===method} disabled={!!extracting} onClick={()=>{setCaptureMethod(method);setReceiptReviewed(false)}}>{label}</Button>)}
                 </div>
-              )}
-              <div className="rounded-lg border bg-muted/30 p-3">
-                <div className="mb-3 flex items-start gap-3">
-                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                    <Receipt className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium">Read a receipt</p>
-                    <p className="text-sm text-muted-foreground">
-                      Choose one receipt to fill an expense draft, then review the details before saving.
-                    </p>
-                  </div>
-                </div>
-                <div className="space-y-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="receipt_file">Receipt file</Label>
-                    <Input
-                      key={receiptFileInputKey}
-                      ref={receiptInput}
-                      id="receipt_file"
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp,application/pdf"
-                      onChange={(e) => changeReceiptFile(e.target.files?.[0] ?? null)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {receiptFile ? `${receiptFile.name} will be attached when you save.` : (selectedExpense?.receipt_path || selectedExpense?.receipt_url) ? 'Existing receipt will stay attached unless replaced.' : 'JPEG, PNG, WebP, or PDF. Up to 10 MB; PDFs up to 5 pages.'}
-                    </p>
-                  </div>
-                  {receiptPreviewUrl && receiptFile && (
-                    receiptFile.type === 'application/pdf'
-                      ? <a href={receiptPreviewUrl} download="receipt.pdf" className="inline-block text-sm underline">Download selected PDF to review</a>
-                      : <img src={receiptPreviewUrl} alt="Selected receipt preview" className="max-h-40 w-full rounded border object-contain" />
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    Extracting sends the selected receipt to OpenAI for processing. Check the amount, currency, date, and category against the original. AI can make mistakes.
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    <Button type="button" variant="outline" size="sm" onClick={handleReceiptFileExtraction} disabled={!receiptFile || !!extracting} className="gap-2">
-                      {extracting === 'file' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                      {extracting === 'file' ? 'Reading receipt...' : 'Extract selected receipt'}
-                    </Button>
-                    {receiptFile && <Button type="button" variant="ghost" size="sm" onClick={() => changeReceiptFile(null)}>Remove selected file</Button>}
-                    {extracting && <Button type="button" variant="ghost" size="sm" onClick={() => { cancelExtraction(); setReceiptSummary('Extraction cancelled. You can retry or enter the details manually.') }}>Cancel extraction</Button>}
-                  </div>
-                  <p className="text-xs text-muted-foreground" role="status" aria-live="polite">
-                    {receiptSummary || 'The receipt is attached to an expense only when you save.'}
-                  </p>
-                  {receiptFileResult && (
-                    <div className="space-y-2 rounded border p-3">
-                      <p className="text-xs text-muted-foreground">
-                        Last receipt extraction confidence: {receiptFileResult.confidence}. {receiptFileResult.reason}
-                      </p>
-                      {receiptSourceFile !== receiptFile && <p className="text-xs text-amber-700 dark:text-amber-400">The attachment changed after extraction. These values came from the previous receipt. Extract the new receipt or review every field and confirm that the attachment belongs to this expense.</p>}
-                      {(!formData.amount || !formData.expense_date || !formData.currency) && <p className="text-xs text-amber-700 dark:text-amber-400">Some details could not be confirmed. Fill the blank amount, date, or currency from the receipt.</p>}
-                      {possibleReceiptDuplicate && <p className="text-xs text-amber-700 dark:text-amber-400" role="status">Possible duplicate: an existing expense has the same merchant, date, amount, and currency. Review your list before saving. This check may not identify all duplicates.</p>}
-                      <label className="flex items-start gap-2 text-sm" htmlFor="receipt_reviewed">
-                        <input id="receipt_reviewed" type="checkbox" checked={receiptReviewed} disabled={!!extracting} onChange={e => setReceiptReviewed(e.target.checked)} className="mt-1" />
-                        <span>I reviewed the draft against my receipt and confirmed the details and any selected attachment.</span>
-                      </label>
-                    </div>
-                  )}
-                  <Label htmlFor="receipt_text">Or paste receipt text</Label>
-                  <Textarea
-                    id="receipt_text"
-                    disabled={!!extracting}
-                    value={receiptText}
-                    onChange={(e) => {
-                      setReceiptText(e.target.value)
-                      setReceiptSummary(null)
-                    }}
-                    placeholder={'Example:\nSTARBUCKS\n04/27/2026\nLatte 5.49\nTax 0.45\nTotal $5.94'}
-                    rows={4}
-                  />
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-xs text-muted-foreground">Pasted text remains available for receipts you have already transcribed.</p>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleReceiptExtraction}
-                      disabled={!!extracting || !receiptText.trim()}
-                      className="shrink-0 gap-2"
-                    >
-                      <Upload className="h-4 w-4" />
-                      Extract pasted receipt
-                    </Button>
-                  </div>
-                </div>
-              </div>
+                {captureMethod==='file'&&<div className="space-y-3 rounded-xl border bg-muted/20 p-3">
+                  <Label htmlFor="receipt_file">Receipt file</Label>
+                  <Input key={receiptFileInputKey} ref={receiptInput} id="receipt_file" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" disabled={!!extracting} onChange={e=>changeReceiptFile(e.target.files?.[0]??null)}/>
+                  <p className="text-xs text-muted-foreground">{receiptFile?`${receiptFile.name} selected.`:'One JPEG, PNG, WebP or PDF, up to 10 MB and 5 PDF pages.'}</p>
+                  <p className="text-xs text-muted-foreground">Extracting sends this receipt to OpenAI. Review the proposal before saving. AI can make mistakes.</p>
+                  <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={!receiptFile||!!extracting} onClick={handleReceiptFileExtraction}>{extracting==='file'?'Reading receipt…':'Extract selected receipt'}</Button>{receiptFile&&<Button type="button" variant="ghost" disabled={!!extracting} onClick={()=>changeReceiptFile(null)}>Remove selected file</Button>}</div>
+                  <p className="text-xs text-muted-foreground">Have an unpaid supplier invoice? <Link href="/bills" className="underline">Enter a supplier bill</Link>.</p>
+                </div>}
+                {captureMethod==='text'&&<div className="space-y-3 rounded-xl border p-3"><Label htmlFor="receipt_text">Receipt text</Label><Textarea id="receipt_text" maxLength={12000} value={receiptText} disabled={!!extracting} onChange={e=>{setReceiptText(e.target.value);setReceiptReviewed(false);setReceiptSummary(null)}} rows={4} placeholder="Paste the receipt details"/><p className="text-xs text-muted-foreground">Extraction sends this text to OpenAI. Check the proposed fields before saving.</p><Button type="button" variant="outline" disabled={!!extracting||!receiptText.trim()} onClick={handleReceiptExtraction}>Extract pasted receipt</Button></div>}
+                {extracting&&<Button type="button" variant="ghost" onClick={()=>{cancelExtraction();setReceiptSummary('Extraction cancelled. Retry or enter the details manually.')}}>Cancel extraction</Button>}
+                {receiptSummary&&<p className="text-sm" role="status">{receiptSummary}</p>}
+                {receiptFileResult&&<div className="space-y-2 rounded border p-3"><p className="text-xs text-muted-foreground">Extraction confidence: {receiptFileResult.confidence}. {receiptFileResult.reason}</p>{receiptSourceFile!==receiptFile&&<p className="text-sm text-amber-700">The original changed after extraction. Extract again or confirm every field against the selected receipt.</p>}{(!formData.amount||!formData.expense_date||!formData.currency)&&<p className="text-sm text-amber-700">Confirm the missing amount, date or currency from the original.</p>}{possibleReceiptDuplicate&&<p role="status" className="text-sm text-amber-700">Possible duplicate: a loaded expense has the same merchant, date, amount and currency. Check your records before saving.</p>}</div>}
+                {(receiptFileResult||captureExtracted)&&<label className="flex items-start gap-2 text-sm" htmlFor="receipt_reviewed"><input id="receipt_reviewed" type="checkbox" checked={receiptReviewed} disabled={!!extracting} onChange={e=>setReceiptReviewed(e.target.checked)} className="mt-1"/><span>I reviewed the draft against my receipt and confirmed the details and any selected attachment.</span></label>}
+              </>}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="amount">Amount *</Label>
@@ -912,7 +826,7 @@ function ExpensesWorkspace() {
                     value={formData.category}
                     onValueChange={(value) => changeFormData({ category: value as ExpenseCategory })}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id="category">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -957,14 +871,15 @@ function ExpensesWorkspace() {
                   />
                 </div>
               </div>
-              <div className="space-y-2">
+              <Button type="button" variant="ghost" className="justify-start" aria-expanded={detailsOpen} onClick={()=>setDetailsOpen(v=>!v)}>Add details {detailsOpen?'−':'+'}</Button>
+              {(detailsOpen||readOnlyExpense)&&<div className="grid gap-4">              <div className="space-y-2">
                 <Label htmlFor="project">Project (optional)</Label>
                 <Select
                   disabled={!!extracting}
                   value={formData.project_id}
                   onValueChange={(value) => changeFormData({ project_id: value })}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="project">
                     <SelectValue placeholder="Select a project" />
                   </SelectTrigger>
                   <SelectContent>
@@ -996,17 +911,20 @@ function ExpensesWorkspace() {
                   rows={2}
                 />
               </div>
+</div>}
             </fieldset>
             <DialogFooter>
-              <Button type="button" variant="outline" disabled={saving || reviewSaving} onClick={() => { closeExpenseDialog(); if (createAttempt.unknown) void loadData() }}>
+              <Button type="button" variant="outline" disabled={saving || reviewSaving || captureBusy} onClick={() => { closeExpenseDialog(); if (createAttempt.unknown) void loadData() }}>
                 {readOnlyExpense ? 'Close' : createAttempt.unknown ? 'Close and review list' : 'Cancel'}
               </Button>
-              {!readOnlyExpense && <Button type="submit" disabled={saving || reviewSaving || !!extracting || (!createAttempt.unknown && !!receiptFileResult && !receiptReviewed)}>
+              {!selectedExpense&&usesRenderBackend&&<Button type="button" variant="outline" disabled={saving||reviewSaving||captureBusy||!!extracting||createAttempt.unknown} onClick={()=>void keepForLater()}>{captureBusy?'Keeping…':'Keep for later'}</Button>}
+              {!readOnlyExpense && <Button type="submit" disabled={saving || reviewSaving || captureBusy || !!extracting || (!createAttempt.unknown && !!(receiptFileResult || captureExtracted) && !receiptReviewed)}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {createAttempt.unknown ? 'Retry original save' : selectedExpense ? 'Save Changes' : 'Add Expense'}
               </Button>}
             </DialogFooter>
-          </form>
+            {!selectedExpense&&<p className="mt-3 text-xs text-muted-foreground">Keep for later stores this draft and any selected original privately in Amountly. It does not call AI or record an expense.</p>}
+          </form></div>
         </DialogContent>
       </Dialog>
 

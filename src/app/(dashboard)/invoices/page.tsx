@@ -3,7 +3,10 @@
 import { useState, useEffect, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { RecordListFilters, useRecordListFilters } from '@/components/RecordListFilters'
+import { invoiceSearchRecord } from '@/lib/search-records'
+import { sourceRecordHref } from '@/lib/record-search'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useCapability } from '@/hooks/useCapability'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAppState } from '@/contexts/AppStateContext'
@@ -90,6 +93,7 @@ export default function InvoicesPage() {
   const formatDateOnly = useDisplayDate()
   const { user } = useAuth()
   const router = useRouter()
+  const queryString=useSearchParams()?.toString()??''
   const canCreate = useCapability(Capability.createInvoices)
   const canEdit = useCapability(Capability.editInvoices)
   const canSend = useCapability(Capability.sendInvoices)
@@ -97,6 +101,8 @@ export default function InvoicesPage() {
   const draftId = useRef('')
   const { organization } = useAppState()
   const [invoices, setInvoices] = useState<Invoice[]>([])
+  const invoiceList=useRecordListFilters(invoices,invoiceSearchRecord)
+  const visibleInvoices=invoiceList.rows
   const [clients, setClients] = useState<Client[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -462,6 +468,7 @@ export default function InvoicesPage() {
         </Card>
       </div>
 
+      <RecordListFilters statuses={Object.values(InvoiceStatus)} invalid={invoiceList.invalid}/>
       {invoices.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">
@@ -497,9 +504,10 @@ export default function InvoicesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {invoices.map((invoice) => (
+                {!visibleInvoices.length&&<TableRow><TableCell colSpan={8}>No invoices match these filters.</TableCell></TableRow>}
+                {visibleInvoices.map((invoice) => (
                   <TableRow key={invoice.id}>
-                    <TableCell className="font-medium"><Link className="underline underline-offset-4" href={`/invoices/${invoice.id}`}>{invoice.invoice_number}</Link></TableCell>
+                    <TableCell className="font-medium"><Link className="underline underline-offset-4" href={sourceRecordHref({kind:'invoices',id:invoice.id},'/invoices'+(queryString?'?'+queryString:''))}>{invoice.invoice_number}</Link></TableCell>
                     <TableCell>{invoice.client?.name || '-'}</TableCell>
                     <TableCell>{formatDateOnly(invoice.issue_date)}</TableCell>
                     <TableCell>{formatDateOnly(invoice.due_date)}</TableCell>

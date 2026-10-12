@@ -44,3 +44,15 @@ test('direct source endpoint returns a safe supporting record without an externa
  const record=await response.json()
  assert.equal(record.amount,420);assert.equal(record.receipt_path,undefined)
 })
+
+
+test('core supporting records use authenticated access without enabling financial-review previews',async()=>{
+ const owner={id:'synthetic-session'},row={id:'00000000-0000-4000-8000-000000000001',kind:'expenses',date:'2026-01-01'}
+ let called=0
+ const loader=loadApp({
+  '@/lib/ai/server':{...loadApp()('src/lib/ai/server.ts'),authorizeAiRequest:async()=>owner},
+  '@/lib/financial-review/service':{...loadApp()('src/lib/financial-review/service.ts'),readSourceRecord:async(client,input)=>{assert.equal(client,owner);assert.equal(input.id,row.id);called++;return row}},
+ },{NODE_ENV:'production',NEXT_PUBLIC_BACKEND:'render'})
+ const response=await loader('src/app/api/financial-review/record/route.ts').POST(request({kind:'expenses',id:row.id}))
+ assert.equal(response.status,200);assert.equal((await response.json()).date,'2026-01-01');assert.equal(called,1)
+})

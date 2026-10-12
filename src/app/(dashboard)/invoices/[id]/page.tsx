@@ -1,7 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'next/navigation'
+import { safeReturnHref } from '@/lib/record-search'
+import { useParams, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { getInvoice, invoiceAction, recordInvoicePayment } from '@/services/invoices.service'
 import type { Invoice, InvoicePayment } from '@/types/models'
@@ -29,6 +30,7 @@ const eventLabels: Record<string, string> = {
 }
 
 export default function InvoiceDetailPage() {
+  const returnTo=safeReturnHref(useSearchParams()?.get('returnTo'),'/invoices')
   const formatDateOnly = useDisplayDate()
   const displayTimestamp = useDisplayDate(true)
   const { id = '' } = useParams<{ id: string }>() ?? {}
@@ -85,13 +87,13 @@ export default function InvoiceDetailPage() {
   }
 
   if (loading) return <p className="p-6" role="status">Loading invoice…</p>
-  if (error || !invoice) return <div className="p-6 space-y-4"><p role="alert">{error || 'Invoice not found.'}</p><Button onClick={load}>Try again</Button><Link href="/invoices">Back to invoices</Link></div>
+  if (error || !invoice) return <div className="p-6 space-y-4"><p role="alert">{error || 'Invoice not found.'}</p><Button onClick={load}>Try again</Button><Link href={returnTo}>Back to results</Link></div>
   const money = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: invoice.currency }).format(value)
   const outstanding = invoice.status === InvoiceStatus.sent || invoice.status === InvoiceStatus.overdue
   const payments = invoice.payments ?? []
 
   return <div className="mx-auto max-w-5xl p-4 sm:p-6 space-y-6">
-    <Link className="text-sm underline underline-offset-4" href="/invoices">← Invoices</Link>
+    <Link className="text-sm underline underline-offset-4" href={returnTo}>← Back to results</Link>
     <div className="flex flex-wrap justify-between gap-4">
       <div><h1 className="text-2xl font-bold">{invoice.invoice_number}</h1><p className="text-muted-foreground">{invoice.client?.name || 'Client unavailable'}</p></div>
       <Badge className="self-start">{outstanding && (invoice.amount_paid ?? 0) > 0 ? `Partially paid${invoice.status === InvoiceStatus.overdue ? ' · Overdue' : ''}` : invoiceStatusLabels[invoice.status]}</Badge>

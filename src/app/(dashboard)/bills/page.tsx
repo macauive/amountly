@@ -1,6 +1,12 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { z } from 'zod/v3'
+import { RecordListFilters,useRecordListFilters } from '@/components/RecordListFilters'
+import { billSearchRecord,vendorBillSearchRecord } from '@/lib/search-records'
+import { safeReturnHref } from '@/lib/record-search'
 import { useDisplayDate } from '@/hooks/useDisplayDate'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAppState } from '@/contexts/AppStateContext'
@@ -160,6 +166,12 @@ function PersonalBillsView() {
   const displayDate = useDisplayDate()
   const { user } = useAuth()
   const [bills, setBills] = useState<Bill[]>([])
+  const searchParams=useSearchParams()
+  const billList=useRecordListFilters(bills,billSearchRecord)
+  const filteredBillRows=billList.rows
+  const focusBill=searchParams?.get('bill')
+  const visibleBillRows=focusBill ? filteredBillRows.filter(b=>z.string().uuid().safeParse(focusBill).success&&b.id===focusBill) : filteredBillRows
+  const returnTo=safeReturnHref(searchParams?.get('returnTo'),'/bills')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -170,7 +182,8 @@ function PersonalBillsView() {
   const createAttempt = useCreateAttempt<Parameters<typeof createBill>[0]>()
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null)
   const [saving, setSaving] = useState(false)
-  const [activeTab, setActiveTab] = useState('upcoming')
+  const [activeTab, setActiveTab] = useState(focusBill?'all':'upcoming')
+  useEffect(()=>{if(focusBill)setActiveTab('all')},[focusBill])
 
   const [formData, setFormData] = useState({
     name: '', payee: '', amount: '',
@@ -271,13 +284,15 @@ function PersonalBillsView() {
         tone: 'ready' as const,
       }]
 
-  const filtered = activeTab === 'upcoming' ? unpaid : activeTab === 'paid' ? paid : activeTab === 'recurring' ? recurring : bills
+  const filtered = (activeTab === 'upcoming' ? unpaid : activeTab === 'paid' ? paid : activeTab === 'recurring' ? recurring : bills).filter(b=>visibleBillRows.includes(b))
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
   if (error) return <div className="p-6"><Card><CardContent className="text-center py-12"><p className="text-destructive">{error}</p><Button onClick={loadData} className="mt-4">Try Again</Button></CardContent></Card></div>
 
   return (
     <div className="p-6 space-y-6">
+      {returnTo!=='/bills'&&<Link href={returnTo} className="text-sm underline">Back to results</Link>}
+      <RecordListFilters statuses={Object.values(BillStatus)} invalid={billList.invalid}/>
       <div className="flex justify-between items-center">
         <div><h1 className="text-2xl font-bold">Bills & Payments</h1><p className="text-muted-foreground">Track your bills and payment history</p></div>
         <Button onClick={openCreate} className="gap-2"><Plus className="w-4 h-4" />Add Bill</Button>
@@ -451,6 +466,12 @@ function AccountsPayableView() {
 
   const [vendors, setVendors] = useState<Vendor[]>([])
   const [bills, setBills] = useState<VendorBill[]>([])
+  const searchParams=useSearchParams()
+  const billList=useRecordListFilters(bills,vendorBillSearchRecord)
+  const filteredBillRows=billList.rows
+  const focusBill=searchParams?.get('bill')
+  const visibleBillRows=focusBill ? filteredBillRows.filter(b=>z.string().uuid().safeParse(focusBill).success&&b.id===focusBill) : filteredBillRows
+  const returnTo=safeReturnHref(searchParams?.get('returnTo'),'/bills')
   const [pos, setPOs] = useState<PurchaseOrder[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -684,6 +705,8 @@ function AccountsPayableView() {
 
   return (
     <div className="p-6 space-y-6">
+      {returnTo!=='/bills'&&<Link href={returnTo} className="text-sm underline">Back to results</Link>}
+      <RecordListFilters statuses={Object.values(BillStatus)} invalid={billList.invalid}/>
       <div>
         <h1 className="text-2xl font-bold">Bills & Vendors</h1>
         <p className="text-muted-foreground">Accounts payable — vendor management, bills, and purchase orders</p>
@@ -743,14 +766,14 @@ function AccountsPayableView() {
           <div className="flex justify-end">
             {canManageBills && <Button onClick={openCreateBill} className="gap-2"><Plus className="w-4 h-4" />New Bill</Button>}
           </div>
-          {bills.length === 0 ? (
+          {visibleBillRows.length === 0 ? (
             <Card><CardContent className="text-center py-12"><FileStack className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" /><p className="text-muted-foreground">No vendor bills yet</p>{canManageBills && <Button onClick={openCreateBill} className="mt-4 gap-2"><Plus className="w-4 h-4" />New Bill</Button>}</CardContent></Card>
           ) : (
             <Card><CardContent className="pt-6">
               <Table>
                 <TableHeader><TableRow><TableHead>Bill #</TableHead><TableHead>Vendor</TableHead><TableHead>Issue Date</TableHead><TableHead>Due Date</TableHead><TableHead className="text-right">Total</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
                 <TableBody>
-                  {bills.map(bill => {
+                  {visibleBillRows.map(bill => {
                     const daysLeft = billDaysUntilDue(bill.due_date)
                     const isPastDue = effectiveBillStatus(bill) === BillStatus.overdue
                     return (

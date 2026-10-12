@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { ReceiptDocument } from '@/components/ReceiptDocument'
+import { CaptureDraftInbox } from '@/components/CaptureDraftInbox'
 import { expenseHref, expenseNeedsReview } from '@/lib/expense-navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { getExpenses, getReceiptUrl } from '@/services/expenses.service'
+import { getExpenses } from '@/services/expenses.service'
 import { getTimeEntries } from '@/services/time-entries.service'
 import { getVendorBills } from '@/services/accounts-payable.service'
 import { getBills } from '@/services/bills.service'
@@ -34,6 +37,7 @@ export default function ReviewPage() {
 
 function ReviewWorkspace() {
   const { user } = useAuth()
+  const params=useSearchParams()
   const [rows, setRows] = useState<ReviewRow[]>([])
   const [bills, setBills] = useState<(Bill | VendorBill)[]>([])
   const [legacyInvoices, setLegacyInvoices] = useState<Invoice[]>([])
@@ -45,6 +49,7 @@ function ReviewWorkspace() {
   const mounted = useRef(true)
   const loadVersion = useRef(0)
   const operation = useRef(false)
+  const [viewReceipt,setViewReceipt]=useState<Expense|null>(null)
   const isSolo = user?.account_type === 'freelancer'
   const canSoloReview = isSolo && !user?.organization_id && user?.is_active !== false
   const canReview = user?.account_type === 'business' && ['OWNER', 'ADMIN'].includes(user.role)
@@ -123,11 +128,13 @@ function ReviewWorkspace() {
     }
   }
 
+  useEffect(()=>{const id=params?.get('selected');if(id&&rows.some(row=>row.record.id===id))document.getElementById('record-'+id)?.scrollIntoView({block:'center'})},[params,rows])
+
   const cards = (items: ReviewRow[]) => items.map(row => {
     const expense = row.kind === 'expenses' ? row.record as Expense : null
     const entry = row.record as TimeEntry
     const canMark = canSoloReview && !!expense && expense.user_id === user?.id && ['DRAFT', 'REJECTED'].includes(expense.status)
-    return <li key={`${row.kind}-${row.record.id}`} className="flex flex-wrap justify-between gap-3 border-b py-3">
+    return <li key={`${row.kind}-${row.record.id}`} id={'record-'+row.record.id} className="flex flex-wrap justify-between gap-3 border-b py-3">
       <div>
         <p className="font-medium">{expense ? expense.description || expense.merchant || 'Expense' : entry.notes || 'Tracked time'}</p>
         <p className="text-sm text-muted-foreground">{expense ? expenseAmount(expense) : `${entry.duration_minutes} minutes · ${entry.project?.name || 'No project'}`} · {row.record.status.toLowerCase()}</p>
@@ -135,11 +142,8 @@ function ReviewWorkspace() {
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" size="sm" disabled={busy} onClick={() => setHistory(row)}>History</Button>
-        <Button variant="outline" size="sm" asChild><Link href={expense ? expenseHref(expense.id) : '/time-entries'}>Open</Link></Button>
-        {expense && (expense.receipt_path || expense.receipt_url) && <Button variant="ghost" size="sm" onClick={async () => {
-          try { const url = await getReceiptUrl(expense); if (mounted.current) window.open(url, '_blank', 'noopener,noreferrer') }
-          catch { if (mounted.current) toast.error('Could not open receipt. Check your access and try again.') }
-        }}>Receipt</Button>}
+        <Button variant="outline" size="sm" asChild><Link href={expense ? expenseHref(expense.id,'/review?selected='+expense.id) : '/time-entries'}>Open</Link></Button>
+        {expense && (expense.receipt_path || expense.receipt_url) && <Button variant="ghost" size="sm" onClick={()=>setViewReceipt(expense)}>Receipt</Button>}
         {canMark ? <Button variant="outline" size="sm" disabled={busy} onClick={() => setConfirmation({ ...row, action: expense.reviewed_at ? 'clear-review' : 'mark-reviewed' })}>{expense.reviewed_at ? 'Clear review' : 'Mark reviewed'}</Button>
           : row.record.status === 'SUBMITTED' && canReview && row.record.user_id !== user?.id ? <>
             <Button size="sm" disabled={busy} onClick={() => setConfirmation({ ...row, action: 'approve' })}>Approve</Button>
@@ -159,6 +163,8 @@ function ReviewWorkspace() {
         ? 'Check your saved expense details and receipts, then mark them reviewed. Needs review counts your draft and rejected expenses; edits require another review.'
         : 'Review captured expenses and time, then follow up on bills. Approvals require a different owner or administrator.'}</p>
     </div>
+    <Dialog open={!!viewReceipt} onOpenChange={open=>{if(!open)setViewReceipt(null)}}><DialogContent className="max-w-3xl max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>Original receipt</DialogTitle><DialogDescription>Compare this original with the saved expense before confirming review.</DialogDescription></DialogHeader>{viewReceipt&&<ReceiptDocument source={{expense:viewReceipt}}/>}</DialogContent></Dialog>
+    <CaptureDraftInbox />
     {error ? <div role="alert">{error}<Button onClick={load}>Try again</Button></div> : <>
       {isSolo ? <>
         <Card><CardHeader><CardTitle>Needs review ({needsReview.length})</CardTitle></CardHeader><CardContent><ul>{cards(needsReview)}</ul>{!needsReview.length && <p>No saved drafts or rejected expenses need review.</p>}</CardContent></Card>
