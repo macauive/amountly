@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import { allowedConnectionRedirect } from '@/lib/chatgpt/redirect'
 
 export function ConnectionForm({ query, consent = false }: { query: string; consent?: boolean }) {
   const [error, setError] = useState(''), [busy, setBusy] = useState(false)
@@ -12,11 +13,10 @@ export function ConnectionForm({ query, consent = false }: { query: string; cons
         body: JSON.stringify(consent ? { accept, oauth_query: query } : { email: values.get('email'), password: values.get('password'), oauth_query: query }),
       })
       const result = await response.json()
-      if (!response.ok) throw new Error('Could not connect. Check your details or start again in ChatGPT.')
+      if (!response.ok) throw new Error('Could not connect. Check your details or start again in ChatGPT or Codex.')
+      if (typeof (result.url ?? result.redirect_uri) !== 'string') throw new Error('Could not finish linking. Start again in ChatGPT or Codex.')
       const url = new URL(result.url ?? result.redirect_uri, window.location.origin)
-      const internal = url.origin === window.location.origin && url.pathname === '/chatgpt/consent'
-      const callback = url.origin === 'https://chatgpt.com' && /^\/connector_platform_oauth_redirect(?:\/[A-Za-z0-9_-]{1,128})?$/.test(url.pathname)
-      if (!internal && !callback) throw new Error('Could not finish linking. Start again in ChatGPT.')
+      if (!allowedConnectionRedirect(url.href, query, window.location.origin)) throw new Error('Could not finish linking. Start again in ChatGPT or Codex.')
       window.location.assign(url.href)
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not connect.'); setBusy(false) }
   }
