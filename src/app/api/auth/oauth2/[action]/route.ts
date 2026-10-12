@@ -4,7 +4,7 @@ import { validateOrigin, requireIdentity } from '@/lib/platform/server'
 import { readBoundedJson } from '@/lib/http'
 import { AiHttpError } from '@/lib/ai/server'
 import { z } from 'zod/v3'
-import { chatgptEnabled, allowedClientDocument, allowedCallback, mcpResource } from '@/lib/chatgpt/config'
+import { chatgptEnabled, allowedClientDocument, allowedClientCallback, mcpResource } from '@/lib/chatgpt/config'
 import { validateAuthorization, validateSignedQuery } from '@/lib/chatgpt/query'
 import { privateHeaders, rateLimit } from '@/lib/chatgpt/auth'
 
@@ -28,7 +28,7 @@ async function form(request: Request) {
   const values = new URLSearchParams(text)
   for (const key of values.keys()) if (!formKeys.has(key) || values.getAll(key).length !== 1) throw new AiHttpError(400, 'Invalid request')
   if (!allowedClientDocument(values.get('client_id') ?? '')) throw new AiHttpError(400, 'Invalid client')
-  if (values.has('redirect_uri') && !allowedCallback(values.get('redirect_uri')!)) throw new AiHttpError(400, 'Invalid callback')
+  if (values.has('redirect_uri') && !allowedClientCallback(values.get('client_id')!, values.get('redirect_uri')!)) throw new AiHttpError(400, 'Invalid callback')
   if (values.has('resource') && values.get('resource') !== mcpResource()) throw new AiHttpError(400, 'Invalid resource')
   return values.toString()
 }
@@ -62,12 +62,12 @@ async function handle(request: Request, context: { params: Promise<{ action: str
     if (response.status >= 400) {
       let code = 'invalid_request'
       try { const failure = await response.json(); if (['invalid_request','invalid_client','invalid_grant','unauthorized_client','unsupported_grant_type','invalid_scope','access_denied','temporarily_unavailable'].includes(failure.error)) code = failure.error } catch { /* Keep the bounded public fallback. */ }
-      return Response.json({ error: code, error_description: 'Connection could not be completed. Start again in ChatGPT.' }, { status: response.status, headers })
+      return Response.json({ error: code, error_description: 'Connection could not be completed. Start again in ChatGPT or Codex.' }, { status: response.status, headers })
     }
     if (['authorize','consent'].includes(action)) await recordIssuedGrant(request,response)
     return new Response(response.body, { status: response.status, headers })
   } catch (error) {
-    return Response.json({ error: 'invalid_request', error_description: 'Connection request could not be completed. Start again in ChatGPT.' },
+    return Response.json({ error: 'invalid_request', error_description: 'Connection request could not be completed. Start again in ChatGPT or Codex.' },
       { status: error instanceof AiHttpError ? error.status : error instanceof z.ZodError ? 400 : 503, headers: privateHeaders })
   }
 }

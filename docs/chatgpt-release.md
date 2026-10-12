@@ -9,8 +9,11 @@ users, rather than organizations.
 
 ## Authentication and boundaries
 
-- Better Auth 1.7.7 OAuth provider and CIMD, with only allowlisted HTTPS ChatGPT
-  client documents and callbacks. Dynamic registration and client CRUD are off.
+- Better Auth 1.7.7 OAuth provider and CIMD, with only allowlisted HTTPS OpenAI
+  client documents. ChatGPT uses its HTTPS callbacks; Codex uses registered HTTP
+  loopback callbacks on exact `127.0.0.1` or `localhost` hosts. Only the port may
+  vary from the client metadata. Client-specific callback paths must match.
+  Dynamic registration and client CRUD are off.
 - Authorization code with S256 PKCE, resource binding, issuer identification,
   opaque hashed access and refresh tokens, and `private_key_jwt` support.
 - Access tokens last ten minutes. Read consent and refresh access expire after

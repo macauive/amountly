@@ -1,12 +1,12 @@
 import { verifyOAuthQueryParams } from '@better-auth/oauth-provider'
 import { getAuth } from '@/lib/platform/auth'
 import { AiHttpError } from '@/lib/ai/server'
-import { allowedCallback, allowedClientDocument, mcpResource, oauthScopes, readScope } from '@/lib/chatgpt/config'
+import { allowedClientCallback, mcpResource, oauthScopes, readScope } from '@/lib/chatgpt/config'
 
 export function validateAuthorization(query: URLSearchParams) {
   if (query.toString().length > 4096) throw new AiHttpError(400, 'Invalid connection request')
   for (const key of query.keys()) if (query.getAll(key).length !== 1) throw new AiHttpError(400, 'Invalid connection request')
-  if (!allowedClientDocument(query.get('client_id') ?? '') || !allowedCallback(query.get('redirect_uri') ?? '')
+  if (!allowedClientCallback(query.get('client_id') ?? '', query.get('redirect_uri') ?? '')
     || query.get('response_type') !== 'code' || query.get('resource') !== mcpResource()
     || query.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(query.get('code_challenge') ?? '')
     || !(query.get('state') ?? '').length || (query.get('state') ?? '').length > 2048) throw new AiHttpError(400, 'Invalid connection request')
@@ -15,7 +15,7 @@ export function validateAuthorization(query: URLSearchParams) {
 }
 
 export async function validateSignedQuery(query: string) {
-  if (query.length > 4096 || !await verifyOAuthQueryParams(query, (await getAuth().$context).secret)) throw new AiHttpError(400, 'Connection request expired. Start again in ChatGPT.')
+  if (query.length > 4096 || !await verifyOAuthQueryParams(query, (await getAuth().$context).secret)) throw new AiHttpError(400, 'Connection request expired. Start again in ChatGPT or Codex.')
   const parameters = new URLSearchParams(query)
   // The provider signs a repeated ba_param list naming its protected fields.
   // Verify that signature first; authorization parameters remain single-valued.
