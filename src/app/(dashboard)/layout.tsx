@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
+import { RecordSearch } from '@/components/RecordSearch'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAppState, type TabId } from '@/contexts/AppStateContext'
@@ -72,7 +73,6 @@ export default function DashboardLayout({
   const { theme, setTheme } = useTheme()
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [mobileOpen, setMobileOpen] = useState(false)
-  const [dashboardSearchQuery, setDashboardSearchQuery] = useState('')
 
   useEffect(() => {
     if (isLoading) {
@@ -130,13 +130,6 @@ export default function DashboardLayout({
   const toggleTheme = () => {
     setTheme(theme === 'dark' ? 'light' : 'dark')
   }
-
-  const handleDashboardSearchChange = (value: string) => {
-    setDashboardSearchQuery(value)
-    window.dispatchEvent(new CustomEvent('amountly-dashboard-search', { detail: value }))
-  }
-
-  const showDashboardSearch = pathname === '/dashboard'
 
   const sidebarContent = (
         <div className="w-64 flex flex-col h-full">
@@ -224,17 +217,7 @@ export default function DashboardLayout({
               <PanelLeft className="h-4 w-4" />
               <span className="sr-only">Toggle Sidebar</span>
             </Button>
-            {showDashboardSearch ? (
-              <div className="relative hidden w-full max-w-2xl md:block">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={dashboardSearchQuery}
-                  onChange={(event) => handleDashboardSearchChange(event.target.value)}
-                  placeholder="Search overdue bills, tax expenses, receipts, invoices..."
-                  className="h-9 bg-muted/40 pl-9"
-                />
-              </div>
-            ) : null}
+            <Suspense fallback={null}><RecordSearch /></Suspense>
             <div className="flex-1" />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

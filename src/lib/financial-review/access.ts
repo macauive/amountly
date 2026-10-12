@@ -27,7 +27,9 @@ export async function createReviewReader(request: Request) {
 
 export async function createSourceReader(request: Request) {
   const { recordQuerySchema, readSourceRecord, summarizeRecord } = await import('@/lib/financial-review/service')
-  if (reviewMode(request) === 'synthetic') return async (input: unknown) => {
+  // Exact supporting records also serve core search when financial review is disabled.
+  // Synthetic fixtures remain restricted to explicitly selected loopback development.
+  if (process.env.AMOUNTLY_REVIEW_MODE === 'synthetic' && reviewMode(request) === 'synthetic') return async (input: unknown) => {
     const query = recordQuerySchema.parse(input), snapshot = syntheticSnapshot()
     const records = query.kind === 'invoices' ? snapshot.invoices : query.kind === 'expenses' ? snapshot.expenses : snapshot.bills.filter(b => b.kind === query.kind)
     const record = records.find(r => r.id === query.id)

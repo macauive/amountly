@@ -1,3 +1,4 @@
+import { dateInputValue } from '@/lib/date-format'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { z } from 'zod/v3'
 import { reportPeriod, workspacePeriodCsv } from '@/lib/reporting'
@@ -16,7 +17,7 @@ const date = z.string().max(40).refine(value => {
   const parsed = new Date(value)
   return /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(value) && !isNaN(parsed.getTime())
     && new Date(`${day}T00:00:00Z`).toISOString().slice(0,10) === day
-}).transform(value => value.slice(0,10))
+}).transform(dateInputValue)
 const invoice = z.object({ invoice_number:z.string().max(100),currency:z.string().length(3),status:z.enum(['SENT','PAID','OVERDUE']) })
 const issued = invoice.extend({ id:z.string().uuid(),issue_date:date,total:amount })
 const receipt = z.object({ id:z.string().uuid(),amount,paid_on:date,invoice,
@@ -91,7 +92,7 @@ export async function loadWorkspaceReport(client: SupabaseClient, query: z.infer
   await pages(offset => {
     let read = client.from('expenses').select(`id,expense_date,amount,currency,description,merchant,status${scope ? ',user_id,category,receipt_path,receipt_url,reviewed_at' : ''}`)
     .eq('currency',query.currency).is('archived_at',null).neq('status','REJECTED')
-    .gte('expense_date',period.start).lt('expense_date',period.endExclusive).order('id')
+    .gte('expense_date',`${period.start}T00:00:00Z`).lt('expense_date',`${period.endExclusive}T00:00:00Z`).order('id')
     if (scope) read = read.eq('user_id',scope.ownerId)
     return read.range(offset,offset+pageSize-1)
   }, scope ? expenseEvidenceSchema : expense, row => {

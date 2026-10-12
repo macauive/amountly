@@ -1,18 +1,31 @@
+import { safeReturnHref } from '@/lib/record-search'
 import { ExpenseCategory, ExpenseStatus } from '@/types/enums'
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export const receiptUploadHref = '/expenses?action=upload-receipt'
-export function expenseHref(id: string) {
-  return uuid.test(id) ? `/expenses?expense=${encodeURIComponent(id)}` : '/expenses'
+export function expenseHref(id: string, returnTo?: string) {
+  if(!uuid.test(id))return '/expenses'
+  const params=new URLSearchParams({expense:id})
+  if(returnTo)params.set('returnTo',safeReturnHref(returnTo,'/expenses'))
+  return '/expenses?'+params
 }
 
 export function expenseNavigation(params: URLSearchParams) {
-  const expense = params.get('expense'), action = params.get('action'), status = params.get('status')
-  const invalid = ['expense', 'action', 'status'].some(key => params.getAll(key).length > 1)
+  const expense = params.get('expense'), action = params.get('action'), status = params.get('status'), capture = params.get('capture')
+  const invalid = ['expense', 'action', 'status', 'capture', 'q', 'start', 'end', 'category', 'review', 'returnTo'].some(key => params.getAll(key).length > 1)
     || (expense !== null && !uuid.test(expense)) || (action !== null && action !== 'upload-receipt')
-    || (expense !== null && action !== null)
+    || [expense,action,capture].filter(value=>value!==null).length > 1
+    || (capture !== null && !uuid.test(capture))
+    || (params.has('q') && params.get('q')!.length > 100)
+    || ['start','end'].some(key=>!!params.get(key)&&!validExpenseFilterDate(params.get(key)!))
+    || (!!params.get('start') && !!params.get('end') && params.get('start')! > params.get('end')!)
+    || (params.has('category') && !['all',...Object.values(ExpenseCategory)].includes(params.get('category')!))
+    || (params.has('review') && !['all','needs-review','reviewed'].includes(params.get('review')!))
     || (status !== null && !Object.values(ExpenseStatus).includes(status as ExpenseStatus))
   return { invalid, expenseId: !invalid && expense ? expense.toLowerCase() : null,
+    captureId: !invalid && capture ? capture.toLowerCase() : null,
+    filters: { query: params.get('q') ?? '', start: params.get('start') ?? '', end: params.get('end') ?? '', category: params.get('category') ?? 'all', review: params.get('review') ?? 'all' },
+    returnTo: safeReturnHref(params.get('returnTo'), '/expenses'),
     uploadReceipt: !invalid && action === 'upload-receipt', status: !invalid && status ? status : 'all' }
 }
 
@@ -42,4 +55,10 @@ export function filterExpenseList<T extends FilterableExpense>(expenses: readonl
     && (filters.status === 'all' || expense.status === filters.status)
     && (!filters.review || filters.review === 'all'
       || (filters.review === 'reviewed' ? !!expense.reviewed_at : expenseNeedsReview(expense))))
+}
+
+export function expenseFilterHref(filters: ExpenseListFilters) {
+  const params = new URLSearchParams()
+  for(const [key,value] of Object.entries({q:filters.query,start:filters.start,end:filters.end,category:filters.category,status:filters.status,review:filters.review??'all'})) if(value && value!=='all')params.set(key,value)
+  return '/expenses'+(params.size?'?'+params.toString():'')
 }

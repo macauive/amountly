@@ -72,7 +72,7 @@ export async function loadReviewSnapshot(client: ReviewClient, actorInput: Actor
     const batch = await pages(page => client.from('expenses')
       .select('id,user_id,description,amount,currency,expense_date,category,status,receipt_path,receipt_url,archived_at')
       .in('user_id', owners).eq('currency', period.currency).is('archived_at', null).neq('status', 'REJECTED')
-      .gte('expense_date', addDays(period.start, -90)).lt('expense_date', addDays(period.end, 1)).order('id').range(page, page + 199))
+      .gte('expense_date', `${addDays(period.start, -90)}T00:00:00Z`).lt('expense_date', `${addDays(period.end, 1)}T00:00:00Z`).order('id').range(page, page + 199))
     for (const row of batch) {
       if (typeof row.user_id !== 'string' || !owners.includes(row.user_id)) throw new ReviewError(403)
       expenses.push({ ...row, organization_id: actor.account_type === 'business' ? actor.organization_id : null })

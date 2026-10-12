@@ -1,3 +1,4 @@
+import { dateInputValue } from '@/lib/date-format'
 import { supportedReceiptCurrencies, type ReceiptFileCaptureResult } from '@/lib/ai/receipt-contract'
 
 export function isSupportedReceiptCurrency(value: string): value is typeof supportedReceiptCurrencies[number] {
@@ -49,6 +50,6 @@ export function findPossibleReceiptDuplicate(candidate: ReceiptCandidate, expens
   return expenses.find(expense => expense.id !== excludedId
     && Number.isFinite(expense.amount) && expense.amount.toFixed(2) === amount.toFixed(2)
     && expense.currency === candidate.currency
-    && expense.expense_date.slice(0, 10) === candidate.expense_date
+    && dateInputValue(expense.expense_date) === candidate.expense_date
     && normalizedMerchant(expense.merchant || '') === merchant)
 }

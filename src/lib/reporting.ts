@@ -1,3 +1,4 @@
+import { dateInputValue } from '@/lib/date-format'
 import type { Expense, Invoice } from '@/types/models'
 import { escapeCsvValue } from '@/lib/csv'
 
@@ -9,7 +10,7 @@ export function reportPeriod(startYear: number, startMonth = 1) {
 }
 export function incomeRecords(invoices: Invoice[], year: number, currency: string, basis: IncomeBasis, startMonth = 1) {
   const period = reportPeriod(year, startMonth)
-  const inYear = (date: string) => date.slice(0,10) >= period.start && date.slice(0,10) < period.endExclusive
+  const inYear = (date: string) => dateInputValue(date) >= period.start && dateInputValue(date) < period.endExclusive
   return invoices.filter(invoice => invoice.currency === currency && !['DRAFT', 'CANCELLED'].includes(invoice.status)).flatMap(invoice => {
     if (basis === 'accrual') return inYear(invoice.issue_date) ? [{ id: invoice.id, invoice_id: invoice.id, name: invoice.invoice_number, date: invoice.issue_date, amount: invoice.total, status: invoice.status, currency }] : []
     return (invoice.payments ?? []).filter(payment => !payment.reversal && inYear(payment.paid_on)).map(payment => ({ id: payment.id, invoice_id: invoice.id, name: invoice.invoice_number, date: payment.paid_on, amount: payment.amount, status: 'RECEIVED', currency }))
@@ -17,7 +18,7 @@ export function incomeRecords(invoices: Invoice[], year: number, currency: strin
 }
 export function expenseRecords(expenses: Expense[], year: number, currency: string, startMonth = 1) {
   const period = reportPeriod(year, startMonth)
-  return expenses.filter(expense => expense.expense_date.slice(0,10) >= period.start && expense.expense_date.slice(0,10) < period.endExclusive && expense.currency === currency && expense.status !== 'REJECTED')
+  return expenses.filter(expense => dateInputValue(expense.expense_date) >= period.start && dateInputValue(expense.expense_date) < period.endExclusive && expense.currency === currency && expense.status !== 'REJECTED')
 }
 export function sumMoney(rows: { amount: number }[]) { return rows.reduce((sum, row) => sum + Math.round(Number(row.amount) * 100), 0) / 100 }
 

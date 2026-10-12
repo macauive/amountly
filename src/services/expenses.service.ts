@@ -20,10 +20,10 @@ export async function getExpenses(filters?: ExpenseFilters): Promise<Expense[]> 
     .order('expense_date', { ascending: false })
 
   if (filters?.startDate) {
-    query = query.gte('expense_date', filters.startDate)
+    query = query.gte('expense_date', `${filters.startDate}T00:00:00Z`)
   }
   if (filters?.endDate) {
-    query = query.lte('expense_date', filters.endDate)
+    query = query.lt('expense_date', new Date(Date.parse(`${filters.endDate}T00:00:00Z`) + 86400000).toISOString())
   }
   if (filters?.category) {
     query = query.eq('category', filters.category)

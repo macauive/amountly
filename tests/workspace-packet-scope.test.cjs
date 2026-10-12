@@ -43,8 +43,8 @@ test('scoped cash report uses only the owner, selected dates and currency and ex
     const currencyField = call.table === 'invoice_payments' ? 'invoice.currency' : 'currency'
     assert.ok(call.filters.some(filter => filter[0] === 'eq' && filter[1] === ownerField && filter[2] === ownerId))
     assert.ok(call.filters.some(filter => filter[0] === 'eq' && filter[1] === currencyField && filter[2] === query.currency))
-    assert.ok(call.filters.some(filter => filter[0] === 'gte' && filter[1] === field && filter[2] === period.start))
-    assert.ok(call.filters.some(filter => filter[0] === 'lt' && filter[1] === field && filter[2] === period.endExclusive))
+    assert.ok(call.filters.some(filter => filter[0] === 'gte' && filter[1] === field && filter[2] === (field==='expense_date'?`${period.start}T00:00:00Z`:period.start)))
+    assert.ok(call.filters.some(filter => filter[0] === 'lt' && filter[1] === field && filter[2] === (field==='expense_date'?`${period.endExclusive}T00:00:00Z`:period.endExclusive)))
     assert.ok(!call.fields.includes('*'))
   }
   const expenses = h.calls.find(call => call.table === 'expenses')

@@ -3,7 +3,7 @@ import { format, parseISO } from 'date-fns'
 export function formatDateOnly(value: string | null | undefined, pattern = 'MMM d, yyyy') {
   if (!value) return '-'
 
-  const dateOnly = value.slice(0, 10)
+  const dateOnly = dateInputValue(value)
   const [year, month, day] = dateOnly.split('-').map(Number)
 
   if (!year || !month || !day) {
@@ -14,7 +14,14 @@ export function formatDateOnly(value: string | null | undefined, pattern = 'MMM 
 }
 
 export function dateInputValue(value: string | null | undefined) {
-  return value ? value.slice(0, 10) : ''
+  if (!value) return ''
+  // Financial commands encode calendar dates at UTC midnight. PostgreSQL may
+  // serialize the same instant with its session offset; recover the UTC day.
+  if (/T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+    const date = parseISO(value)
+    return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : ''
+  }
+  return value.slice(0, 10)
 }
 
 export function dateFormatPattern(preference: unknown) {

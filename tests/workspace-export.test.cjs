@@ -59,7 +59,7 @@ test('workspace CSV is an attachment with bounded name, exact fiscal metadata, e
   assert.equal(result.res.body.split('\r\n').length,2)
   const reads=result.calls.filter(c=>c.table!=='users')
   assert.ok(reads.every(c=>!c.fields.includes('*') && !c.fields.includes('receipt_path')))
-  assert.ok(reads.every(c=>c.filters.some(f=>f[0]==='gte' && f[2]==='2026-04-01') && c.filters.some(f=>f[0]==='lt' && f[2]==='2027-04-01')))
+  assert.ok(reads.every(c=>c.filters.some(f=>f[0]==='gte' && f[2]===(c.table==='expenses'?'2026-04-01T00:00:00Z':'2026-04-01')) && c.filters.some(f=>f[0]==='lt' && f[2]===(c.table==='expenses'?'2027-04-01T00:00:00Z':'2027-04-01'))))
 })
 test('workspace accrual export reads issued invoice totals and captured expenses with separate bases',async()=>{
   const result=await request({query:{...query,basis:'accrual'},invoices:[{...invoice,id:id(1),issue_date:'2026-04-01T00:00:00+00:00',total:100}],expenses:[{id:id(2),expense_date:'2026-05-01',amount:12.5,currency:'USD',description:'Synthetic expense',merchant:null,status:'DRAFT'}]})

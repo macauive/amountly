@@ -1,3 +1,4 @@
+import { dateInputValue } from '@/lib/date-format'
 import { z } from 'zod/v3'
 import { AccountType, Role } from '@/types/enums'
 
@@ -5,8 +6,8 @@ export const day = z.string().regex(/^20\d{2}-\d{2}-\d{2}$/).refine(value => {
   const d = new Date(`${value}T00:00:00Z`)
   return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value
 }, 'Invalid calendar date')
-// Database date columns include timestamptz; keep the record's calendar day.
-export const storedDay = z.union([day, z.string().datetime({ offset: true }).transform(value => value.slice(0, 10))]).pipe(day)
+// Financial date timestamps are stored in UTC; normalize serialized offsets once.
+export const storedDay = z.union([day, z.string().datetime({ offset: true }).transform(dateInputValue)]).pipe(day)
 export const periodFields = { start: day, end: day, currency: z.enum(['USD', 'EUR', 'GBP', 'CAD', 'AUD']) }
 export const periodSchema = z.object(periodFields).strict().refine(p => p.end >= p.start &&
   Date.parse(p.end) - Date.parse(p.start) <= 30 * 86400000, 'Choose at most 31 days')

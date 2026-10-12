@@ -3,6 +3,8 @@ const nextConfig = {
   output: 'standalone',
   serverExternalPackages: ['pg', 'better-auth', 'nodemailer'],
   outputFileTracingIncludes: {
+    '/api/receipt-viewer-worker': ['./node_modules/pdfjs-dist/build/pdf.worker.min.mjs'],
+    '/api/capture-drafts': ['./scripts/receipt-pdf-worker.mjs', './node_modules/pdfjs-dist/legacy/build/*.mjs', './node_modules/pdfjs-dist/package.json'],
     '/api/ai/receipt': ['./scripts/receipt-pdf-worker.mjs', './node_modules/pdfjs-dist/legacy/build/*.mjs', './node_modules/pdfjs-dist/package.json'],
   },
   reactStrictMode: true,

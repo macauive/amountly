@@ -38,7 +38,6 @@ import {
   CalendarClock,
   Wand2,
   ArrowRight,
-  Search,
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { getQuickActions } from '@/lib/quick-actions'
@@ -84,15 +83,6 @@ type MonthlySummary = {
   highlights: string[]
 }
 
-type FinancialSearchResult = {
-  id: string
-  title: string
-  detail: string
-  href: string
-  label: string
-  priority: AiNextStep['priority']
-}
-
 type WorkDashboardData = {
   invoices: Invoice[]
   expenses: Expense[]
@@ -110,13 +100,6 @@ function formatHours(minutes: number) {
   return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: hours < 10 ? 1 : 0 }).format(hours)}h`
 }
 
-function normalizeSearchText(value: string) {
-  return value.trim().toLowerCase()
-}
-
-function includesAny(query: string, terms: string[]) {
-  return terms.some(term => query.includes(term))
-}
 
 function getPersonalStats(bills: Bill[], expenses: Expense[]): DashboardStat[] {
   const now = new Date()
@@ -510,233 +493,6 @@ function getPriorityVariant(priority: AiNextStep['priority']): 'default' | 'seco
   }
 }
 
-function getPersonalFinancialSearchResults(query: string, bills: Bill[], expenses: Expense[]): FinancialSearchResult[] {
-  const normalizedQuery = normalizeSearchText(query)
-  if (!normalizedQuery) return []
-
-  const now = new Date()
-  const monthStart = startOfMonth(now)
-  const yearStart = new Date(now.getFullYear(), 0, 1)
-  const unpaidBills = bills.filter(
-    bill => bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled
-  )
-  const overdueBills = unpaidBills.filter(bill => differenceInCalendarDays(parseISO(bill.due_date), now) < 0)
-  const billsDueSoon = unpaidBills.filter((bill) => {
-    const dueDate = parseISO(bill.due_date)
-    return !isBefore(dueDate, now) && !isAfter(dueDate, addDays(now, 7))
-  })
-  const expensesThisMonth = expenses.filter((expense) => {
-    const expenseDate = parseISO(expense.expense_date)
-    return !isBefore(expenseDate, monthStart)
-  })
-  const expensesThisYear = expenses.filter((expense) => {
-    const expenseDate = parseISO(expense.expense_date)
-    return !isBefore(expenseDate, yearStart)
-  })
-  const uncategorizedExpenses = expenses.filter(
-    expense => !expense.category || expense.category === ExpenseCategory.other
-  )
-  const results: FinancialSearchResult[] = []
-
-  if (includesAny(normalizedQuery, ['overdue', 'late', 'past due'])) {
-    results.push({
-      id: 'search-overdue-bills',
-      title: overdueBills.length
-        ? `${overdueBills.length} overdue ${overdueBills.length === 1 ? 'bill' : 'bills'} found`
-        : 'No overdue bills found',
-      detail: overdueBills.length
-        ? `${formatCurrency(overdueBills.reduce((sum, bill) => sum + bill.amount, 0))} needs review in Bills.`
-        : 'Tracked unpaid bills are not past due right now.',
-      href: '/bills',
-      label: 'Open Bills',
-      priority: overdueBills.length ? 'high' : 'low',
-    })
-  }
-
-  if (includesAny(normalizedQuery, ['bill', 'bills', 'due', 'payment', 'pay'])) {
-    results.push({
-      id: 'search-upcoming-bills',
-      title: billsDueSoon.length
-        ? `${billsDueSoon.length} ${billsDueSoon.length === 1 ? 'bill is' : 'bills are'} due soon`
-        : `${unpaidBills.length} unpaid ${unpaidBills.length === 1 ? 'bill' : 'bills'}`,
-      detail: unpaidBills.length
-        ? `${formatCurrency(unpaidBills.reduce((sum, bill) => sum + bill.amount, 0))} is still open.`
-        : 'There are no unpaid bills in the current dashboard data.',
-      href: '/bills',
-      label: 'Review Bills',
-      priority: billsDueSoon.length ? 'medium' : 'low',
-    })
-  }
-
-  if (includesAny(normalizedQuery, ['expense', 'expenses', 'spending', 'receipt', 'receipts', 'category', 'categorize', 'uncategorized'])) {
-    results.push({
-      id: 'search-expenses',
-      title: uncategorizedExpenses.length
-        ? `${uncategorizedExpenses.length} expenses may need cleanup`
-        : `${expensesThisMonth.length} expenses tracked this month`,
-      detail: uncategorizedExpenses.length
-        ? 'Review expenses marked Other before reports or tax export.'
-        : `${formatCurrency(expensesThisMonth.reduce((sum, expense) => sum + expense.amount, 0))} is recorded for this month.`,
-      href: '/expenses',
-      label: 'Open Expenses',
-      priority: uncategorizedExpenses.length ? 'medium' : 'low',
-    })
-  }
-
-  if (includesAny(normalizedQuery, ['tax', 'deduction', 'deductions', 'export', 'quarterly', '1099'])) {
-    results.push({
-      id: 'search-tax',
-      title: `${expensesThisYear.length} expense records can feed Tax Prep`,
-      detail: expensesThisYear.length
-        ? `${formatCurrency(expensesThisYear.reduce((sum, expense) => sum + expense.amount, 0))} in current-year expenses is available for review.`
-        : 'Add expenses first, then Tax Prep can help organize records.',
-      href: '/tax',
-      label: 'Open Tax Prep',
-      priority: expensesThisYear.length ? 'medium' : 'low',
-    })
-  }
-
-  if (normalizedQuery.length > 2) {
-    const matchedExpenses = expenses.filter((expense) => {
-      const searchable = [
-        expense.merchant,
-        expense.description,
-        expense.notes,
-        expense.category ? expenseCategoryLabels[expense.category] : undefined,
-      ].filter(Boolean).join(' ').toLowerCase()
-      return searchable.includes(normalizedQuery)
-    })
-    const matchedBills = bills.filter((bill) => {
-      const searchable = [bill.name, bill.payee, bill.notes, bill.category].filter(Boolean).join(' ').toLowerCase()
-      return searchable.includes(normalizedQuery)
-    })
-
-    if (matchedExpenses.length > 0) {
-      results.push({
-        id: 'search-matched-expenses',
-        title: `${matchedExpenses.length} matching ${matchedExpenses.length === 1 ? 'expense' : 'expenses'}`,
-        detail: `Matches total ${formatCurrency(matchedExpenses.reduce((sum, expense) => sum + expense.amount, 0))}.`,
-        href: '/expenses',
-        label: 'View Matches',
-        priority: 'low',
-      })
-    }
-
-    if (matchedBills.length > 0) {
-      results.push({
-        id: 'search-matched-bills',
-        title: `${matchedBills.length} matching ${matchedBills.length === 1 ? 'bill' : 'bills'}`,
-        detail: `Matches total ${formatCurrency(matchedBills.reduce((sum, bill) => sum + bill.amount, 0))}.`,
-        href: '/bills',
-        label: 'View Matches',
-        priority: 'low',
-      })
-    }
-  }
-
-  if (results.length === 0) {
-    results.push({
-      id: 'search-fallback',
-      title: 'No direct match yet',
-      detail: 'Try overdue bills, tax expenses, receipts, or a merchant name from your records.',
-      href: '/dashboard',
-      label: 'Stay Here',
-      priority: 'low',
-    })
-  }
-
-  return results.slice(0, 4)
-}
-
-function getSampleFinancialSearchResults(query: string, accountType: AccountType): FinancialSearchResult[] {
-  const normalizedQuery = normalizeSearchText(query)
-  if (!normalizedQuery) return []
-
-  const results: FinancialSearchResult[] = []
-  const isFreelancer = accountType === AccountType.freelancer
-
-  if (includesAny(normalizedQuery, ['invoice', 'invoices', 'paid', 'payment', 'client', 'customer', 'overdue'])) {
-    results.push({
-      id: 'sample-invoices',
-      title: isFreelancer ? 'Invoice workflow is the best match' : 'Receivables need an invoice pass',
-      detail: isFreelancer
-        ? 'Review open invoices or draft invoices from tracked work.'
-        : 'Open invoices, reminders, and payment follow-ups live together.',
-      href: '/invoices',
-      label: 'Open Invoices',
-      priority: 'high',
-    })
-  }
-
-  if (includesAny(normalizedQuery, ['expense', 'expenses', 'spending', 'receipt', 'receipts', 'category', 'categorize'])) {
-    results.push({
-      id: 'sample-expenses',
-      title: 'Expense capture is the best match',
-      detail: 'Use smart capture to turn spending into categorized records.',
-      href: '/expenses',
-      label: 'Open Expenses',
-      priority: 'medium',
-    })
-  }
-
-  if (includesAny(normalizedQuery, ['bill', 'bills', 'vendor', 'payable', 'due'])) {
-    results.push({
-      id: 'sample-bills',
-      title: 'Bills and vendor payments are the best match',
-      detail: 'Review upcoming bills, reminders, and payables before close.',
-      href: '/bills',
-      label: 'Open Bills',
-      priority: 'medium',
-    })
-  }
-
-  if (includesAny(normalizedQuery, ['time', 'hours', 'project', 'work'])) {
-    results.push({
-      id: 'sample-time',
-      title: 'Tracked work is the best match',
-      detail: 'Review billable time, then turn complete work into invoices.',
-      href: '/time-entries',
-      label: 'Open Time',
-      priority: 'medium',
-    })
-  }
-
-  if (includesAny(normalizedQuery, ['tax', 'deduction', 'deductions', 'export', 'quarterly', '1099'])) {
-    results.push({
-      id: 'sample-tax',
-      title: 'Tax Prep is the best match',
-      detail: 'Review categorized income and expenses before exporting records.',
-      href: '/tax',
-      label: 'Open Tax Prep',
-      priority: 'medium',
-    })
-  }
-
-  if (includesAny(normalizedQuery, ['close', 'month', 'monthly', 'summary', 'report'])) {
-    results.push({
-      id: 'sample-close',
-      title: 'Monthly close is the best match',
-      detail: 'Use the dashboard checklist to review invoices, spending, and tax readiness.',
-      href: '/dashboard',
-      label: 'Review Dashboard',
-      priority: 'low',
-    })
-  }
-
-  if (results.length === 0) {
-    results.push({
-      id: 'sample-fallback',
-      title: 'Try a workflow phrase',
-      detail: 'Search for invoices, bills, expenses, time, tax, or monthly close.',
-      href: '/dashboard',
-      label: 'Stay Here',
-      priority: 'low',
-    })
-  }
-
-  return results.slice(0, 4)
-}
-
 function getMonthlyCloseChecklist(accountType: AccountType, bills: Bill[], expenses: Expense[]): CloseChecklistItem[] {
   if (accountType === AccountType.personal) {
     const unpaidBills = bills.filter(
@@ -814,11 +570,9 @@ export default function DashboardPage() {
   const [personalDashboardError, setPersonalDashboardError] = useState<string | null>(null)
   const [closeGuideOpen, setCloseGuideOpen] = useState(false)
   const [activeCloseStepId, setActiveCloseStepId] = useState<string | null>(null)
-  const [financialSearchQuery, setFinancialSearchQuery] = useState('')
   const [dashboardAiInsights, setDashboardAiInsights] = useState<{
     nextSteps: AiNextStep[]
     monthlySummary: MonthlySummary
-    searchResults: FinancialSearchResult[]
   } | null>(null)
 
   const accountType = user?.account_type || AccountType.personal
@@ -895,28 +649,13 @@ export default function DashboardPage() {
   }, [accountType, user?.id, user?.organization_id])
 
   useEffect(() => {
-    const handleDashboardSearch = (event: Event) => {
-      const query =
-        event instanceof CustomEvent && typeof event.detail === 'string'
-          ? event.detail
-          : ''
-      setFinancialSearchQuery(query)
-    }
-
-    window.addEventListener('amountly-dashboard-search', handleDashboardSearch)
-    return () => {
-      window.removeEventListener('amountly-dashboard-search', handleDashboardSearch)
-    }
-  }, [])
-
-  useEffect(() => {
     let isMounted = true
 
     const loadAiInsights = async () => {
       try {
         const insights = await getDashboardAiInsights({
           accountType,
-          searchQuery: financialSearchQuery,
+          searchQuery: '',
           bills: personalBills,
           expenses: personalExpenses,
           workData: workDashboardData,
@@ -937,7 +676,7 @@ export default function DashboardPage() {
       window.clearTimeout(timer)
       isMounted = false
     }
-  }, [accountType, financialSearchQuery, personalBills, personalExpenses, workDashboardData])
+  }, [accountType, personalBills, personalExpenses, workDashboardData])
 
   const getStatsForAccountType = (): DashboardStat[] => {
     switch (accountType) {
@@ -969,22 +708,15 @@ export default function DashboardPage() {
     accountType === AccountType.personal
       ? getPersonalMonthlySummary(personalBills, personalExpenses)
       : getSampleMonthlySummary(accountType)
-  const localFinancialSearchResults =
-    accountType === AccountType.personal
-      ? getPersonalFinancialSearchResults(financialSearchQuery, personalBills, personalExpenses)
-      : getSampleFinancialSearchResults(financialSearchQuery, accountType)
   const aiNextSteps = dashboardAiInsights?.nextSteps.length ? dashboardAiInsights.nextSteps : localNextSteps
   const monthlySummary = dashboardAiInsights?.monthlySummary ?? localMonthlySummary
-  const financialSearchResults =
-    financialSearchQuery.trim() && dashboardAiInsights
-      ? dashboardAiInsights.searchResults
-      : localFinancialSearchResults
   const completedCloseSteps = monthlyCloseChecklist.filter(item => item.done).length
   const monthlyCloseProgress = Math.round((completedCloseSteps / monthlyCloseChecklist.length) * 100)
   const activeCloseStep =
     monthlyCloseChecklist.find(item => item.id === activeCloseStepId) ??
     monthlyCloseChecklist.find(item => !item.done) ??
     monthlyCloseChecklist[0]
+
 
   const unpaidBills = personalBills.filter(
     bill => bill.status !== BillStatus.paid && bill.status !== BillStatus.cancelled
@@ -1114,41 +846,6 @@ export default function DashboardPage() {
           </div>
         </CardContent>
       </Card>
-
-      {financialSearchQuery.trim() ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Search className="h-5 w-5" />
-              Search Results
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-3 md:grid-cols-2">
-              {financialSearchResults.map((result) => (
-                <button
-                  key={result.id}
-                  type="button"
-                  onClick={() => router.push(result.href)}
-                  className="rounded-lg border bg-background p-4 text-left transition-colors hover:bg-accent"
-                >
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <Badge variant={getPriorityVariant(result.priority)}>
-                      {result.priority}
-                    </Badge>
-                    <ArrowRight className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <h2 className="text-sm font-semibold">{result.title}</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">{result.detail}</p>
-                  <span className="mt-3 inline-flex text-xs font-medium text-primary">
-                    {result.label}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
 
       {/* Quick Actions */}
       <Card>

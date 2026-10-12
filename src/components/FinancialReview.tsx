@@ -1,5 +1,7 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { periodSchema } from '@/lib/financial-review/contracts'
 import type { FinancialReview as Review } from '@/lib/financial-review/calculate'
 import { demoPeriod } from '@/lib/financial-review/fixtures'
 import { getSupabaseClient } from '@/lib/supabase'
@@ -8,10 +10,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { Period } from '@/lib/financial-review/contracts'
 
 export function FinancialReview({ synthetic = false }: { synthetic?: boolean }) {
+  const router=useRouter(), searchParams=useSearchParams()
+  const query=searchParams?.toString()??''
+  const requested=periodSchema.safeParse({start:searchParams?.get('start'),end:searchParams?.get('end'),currency:searchParams?.get('currency')})
+  const loadedPeriod=useRef('')
   const today = new Date().toISOString().slice(0, 10)
-  const [period, setPeriod] = useState<Period>(synthetic ? demoPeriod : { start: today, end: today, currency: 'USD' })
+  const [period, setPeriod] = useState<Period>(requested.success?requested.data:synthetic ? demoPeriod : { start: today, end: today, currency: 'USD' })
   const [review, setReview] = useState<Review | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false)
-  const [view, setView] = useState<'findings' | 'unpaid' | 'obligations'>('findings')
+  const [view, setView] = useState<'findings' | 'unpaid' | 'obligations'>(['findings','unpaid','obligations'].includes(searchParams?.get('view')??'')?searchParams!.get('view') as 'findings'|'unpaid'|'obligations':'findings')
   const [agentBusy, setAgentBusy] = useState(false), [agentNote, setAgentNote] = useState('')
   const [selected, setSelected] = useState<Review['findings'][number]['source'] | null>(null)
   async function load(selectedPeriod: Period) {
@@ -41,10 +47,27 @@ export function FinancialReview({ synthetic = false }: { synthetic?: boolean }) 
     } catch { setAgentNote('The agent could not complete this review. Your original findings are still available.') }
     finally { setAgentBusy(false) }
   }
+  function reviewHref(selectedPeriod:Period,selectedView= view,selectedId?:string) {
+    const params=new URLSearchParams({...selectedPeriod,view:selectedView})
+    if(selectedId)params.set('selected',selectedId)
+    return '/financial-review?'+params
+  }
+  useEffect(()=>{
+    const input=periodSchema.safeParse({start:searchParams?.get('start'),end:searchParams?.get('end'),currency:searchParams?.get('currency')})
+    if(!input.success)return
+    const key=JSON.stringify(input.data)
+    if(key!==loadedPeriod.current){loadedPeriod.current=key;void load(input.data)}
+  },[query])
+  useEffect(()=>{
+    const id=searchParams?.get('selected')
+    if(!id||!review)return
+    const source=[...review.findings,...review.unpaid,...review.obligations].find(row=>row.source.id===id)?.source
+    if(source){setSelected(source);document.getElementById('finding-'+id)?.scrollIntoView({block:'center'})}
+  },[query,review])
   const money = (amount: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: review?.period.currency || period.currency }).format(amount)
   return <section className="mx-auto max-w-5xl space-y-6 p-4 sm:p-8">
     <header><p className="text-sm font-medium text-emerald-700">AMOUNTLY · FINANCIAL REVIEW</p><h1 className="mt-2 text-3xl font-bold">See what needs attention</h1><p className="mt-2 text-muted-foreground">Review your outstanding invoices, upcoming obligations, and expense records.</p>{synthetic && <p className="mt-2 text-sm text-amber-700">Synthetic sample · No connected account data</p>}</header>
-    <form className="flex flex-wrap items-end gap-3" onSubmit={e => { e.preventDefault(); const values=new FormData(e.currentTarget); void load({start:String(values.get('start')),end:String(values.get('end')),currency:String(values.get('currency')) as Period['currency']}) }}>
+    <form className="flex flex-wrap items-end gap-3" onSubmit={e => { e.preventDefault(); const values=new FormData(e.currentTarget); const input={start:String(values.get('start')),end:String(values.get('end')),currency:String(values.get('currency')) as Period['currency']};loadedPeriod.current=JSON.stringify(input);router.replace(reviewHref(input),{scroll:false});void load(input) }}>
       <label className="grid gap-1 text-sm">From<input name="start" className="rounded border p-2" type="date" required value={period.start} onChange={e => setPeriod({ ...period, start: e.target.value })} /></label>
       <label className="grid gap-1 text-sm">Through<input name="end" className="rounded border p-2" type="date" required value={period.end} onChange={e => setPeriod({ ...period, end: e.target.value })} /></label>
       <label className="grid gap-1 text-sm">Currency<select name="currency" className="rounded border p-2" value={period.currency} onChange={e => setPeriod({ ...period, currency: e.target.value as Period['currency'] })}>{['USD', 'EUR', 'GBP', 'CAD', 'AUD'].map(c => <option key={c}>{c}</option>)}</select></label>
@@ -54,9 +77,9 @@ export function FinancialReview({ synthetic = false }: { synthetic?: boolean }) 
     {review && <><div className="grid gap-4 sm:grid-cols-3">{[['Unpaid invoices', review.totals.unpaid], ['Current obligations', review.totals.obligations], ['Period expenses', review.totals.expenses]].map(([label, amount]) => <Card key={label}><CardHeader><CardTitle className="text-sm font-normal">{label}</CardTitle></CardHeader><CardContent className="text-2xl font-semibold">{money(Number(amount))}</CardContent></Card>)}</div>
       <p className="text-sm text-muted-foreground">As of {review.asOf} · {review.period.start} through {review.period.end}</p>
       {synthetic && <div className="flex flex-wrap items-center gap-3"><Button variant="outline" disabled={agentBusy || busy} onClick={() => void prioritize()}>{agentBusy ? 'Agent reviewing…' : 'Review sample with agent'}</Button><p className="text-sm" role="status">{agentNote}</p></div>}
-      <nav className="flex flex-wrap gap-2" aria-label="Review views">{(['findings', 'unpaid', 'obligations'] as const).map(v => <Button key={v} variant={v === view ? 'default' : 'outline'} aria-pressed={v === view} onClick={() => { setView(v); setSelected(null) }}>{v === 'findings' ? 'Findings' : v === 'unpaid' ? 'Unpaid invoices' : 'Upcoming bills'}</Button>)}</nav>
-      <ul className="space-y-3">{review[view].map(row => <li key={'id' in row ? row.id : row.source.id} className="rounded-xl border bg-card p-5"><h2 className="font-semibold">{'title' in row ? row.title : row.source.label}</h2><p className="my-2 text-sm text-muted-foreground">{'detail' in row ? row.detail : `${money(row.amount)} · Due ${row.due}`}</p><Button size="sm" variant="outline" onClick={() => setSelected(row.source)}>Supporting record: {row.source.label}</Button></li>)}{!review[view].length && <li className="rounded border p-5">No matching records in this view.</li>}</ul>
-      {selected && <Card><CardHeader><CardTitle>Supporting record · {selected.label}</CardTitle></CardHeader><CardContent>{review.findings.filter(f => f.source.id === selected.id).map(f => <p className="mt-3 text-sm" key={f.id}>{f.detail}</p>)}{!synthetic && <a className="mt-3 inline-block underline" href={selected.href}>Open source record</a>}<Button className="ml-3" size="sm" variant="ghost" onClick={() => setSelected(null)}>Close record</Button></CardContent></Card>}
+      <nav className="flex flex-wrap gap-2" aria-label="Review views">{(['findings', 'unpaid', 'obligations'] as const).map(v => <Button key={v} variant={v === view ? 'default' : 'outline'} aria-pressed={v === view} onClick={() => { setView(v); setSelected(null);router.replace(reviewHref(period,v),{scroll:false}) }}>{v === 'findings' ? 'Findings' : v === 'unpaid' ? 'Unpaid invoices' : 'Upcoming bills'}</Button>)}</nav>
+      <ul className="space-y-3">{review[view].map(row => <li key={'id' in row ? row.id : row.source.id} id={'finding-'+row.source.id} className="rounded-xl border bg-card p-5"><h2 className="font-semibold">{'title' in row ? row.title : row.source.label}</h2><p className="my-2 text-sm text-muted-foreground">{'detail' in row ? row.detail : `${money(row.amount)} · Due ${row.due}`}</p><Button size="sm" variant="outline" onClick={() => setSelected(row.source)}>Supporting record: {row.source.label}</Button></li>)}{!review[view].length && <li className="rounded border p-5">No matching records in this view.</li>}</ul>
+      {selected && <Card><CardHeader><CardTitle>Supporting record · {selected.label}</CardTitle></CardHeader><CardContent>{review.findings.filter(f => f.source.id === selected.id).map(f => <p className="mt-3 text-sm" key={f.id}>{f.detail}</p>)}{!synthetic && <a className="mt-3 inline-block underline" href={selected.href+(selected.href.includes('?')?'&':'?')+'returnTo='+encodeURIComponent(reviewHref(period,view,selected.id))}>Open source record</a>}<Button className="ml-3" size="sm" variant="ghost" onClick={() => setSelected(null)}>Close record</Button></CardContent></Card>}
       <div className="space-y-2 text-sm text-muted-foreground">{review.notes.map(note => <p key={note}>{note}</p>)}</div>
     </>}
   </section>

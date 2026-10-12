@@ -41,7 +41,7 @@ function renderPage(page, accountType, expenses, time = []) {
       useEffect: () => {}, useCallback: callback => callback, useRef: initial => ({ current: initial }),
     },
     'next/link': 'Link',
-    'next/navigation': { useRouter: () => ({ push: () => assert.fail('Rendering must not navigate') }) },
+    'next/navigation': { useSearchParams:()=>new URLSearchParams(), useRouter: () => ({ push: () => assert.fail('Rendering must not navigate') }) },
     '@/contexts/AuthContext': { useAuth: () => ({ user: { id: owner, account_type: accountType, name: 'Synthetic owner', role: 'OWNER' } }) },
     '@/contexts/AppStateContext': { useAppState: () => ({ hasCapability: () => true }) },
     '@/lib/dashboard-ai': { getDashboardAiInsights: () => assert.fail('Navigation test must not call AI') },
@@ -100,7 +100,7 @@ test('Review opens exact draft and submitted expense records while keeping time 
   const tree = renderPage('review', 'business', [expense, { ...expense, id: otherExpenseId, user_id: 'synthetic-other-owner', status: 'SUBMITTED' }], [time])
   const links = elements(tree).filter(node => node.type === 'Link' && text(node) === 'Open')
   assert.deepEqual(links.map(node => node.props.href), [
-    `/expenses?expense=${expenseId}`, '/time-entries', `/expenses?expense=${otherExpenseId}`,
+    `/expenses?expense=${expenseId}&returnTo=${encodeURIComponent('/review?selected='+expenseId)}`, '/time-entries', `/expenses?expense=${otherExpenseId}&returnTo=${encodeURIComponent('/review?selected='+otherExpenseId)}`,
   ])
 })
 
