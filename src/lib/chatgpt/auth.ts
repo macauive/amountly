@@ -5,11 +5,12 @@ import { clientForIdentity } from '@/lib/platform/server'
 import { AiHttpError } from '@/lib/ai/server'
 import { allowedClientDocument, chatgptEnabled, mcpResource, oauthIssuer, readScope, connectionScopes } from '@/lib/chatgpt/config'
 import type { ReviewClient } from '@/lib/financial-review/service'
+import { admitIntegrationRequest } from '@/lib/chatgpt/admission'
 
 export const privateHeaders = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }
 
-// Shared database counters are atomic across processes, with a fixed bounded
-// key space. Caller-controlled IP/forwarded headers never select a rate key.
+// Durable counters are keyed only by a proven owner. Anonymous traffic has
+// separate bounded admission and cannot spend a legitimate account's budget.
 export async function rateLimit(key: string, max: number) {
   const result = await authPool().query(`insert into amountly_auth.mcp_rate (key, window_start, count)
     values ($1, date_trunc('minute', now()), 1)
@@ -39,7 +40,7 @@ export async function requireMcpIdentity(request: Request) {
   if (!chatgptEnabled()) throw new AiHttpError(404, 'Not found')
   const authorization = request.headers.get('authorization') ?? ''
   if (!/^Bearer amt_at_[A-Za-z0-9_-]{20,200}$/.test(authorization)) throw new AiHttpError(401, 'Connect Amountly to continue.')
-  await rateLimit('mcp:authentication', 240)
+  return admitIntegrationRequest(`mcp:${authorization}`, async () => {
   const token = authorization.slice(7)
   const lookup = await authPool().query(`select a."clientId" from amountly_auth."oauthAccessToken" a
     join amountly_auth.mcp_grants g on g.authorization_code_id=a."authorizationCodeId" and g.user_id=a."userId"
@@ -62,6 +63,7 @@ export async function requireMcpIdentity(request: Request) {
     || (row.bannedUntil && new Date(row.bannedUntil) > new Date())) throw new AiHttpError(401, 'Reconnect Amountly to continue.')
   await rateLimit(`mcp:user:${claims.sub}`, 30)
   return { id: claims.sub, email: z.string().email().max(254).parse(row.email), clientId, scopes: claims.scope.split(' ') }
+  })
 }
 
 export async function mcpClient(request: Request) {

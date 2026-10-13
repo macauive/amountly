@@ -12,6 +12,7 @@ import { cimd } from '@better-auth/cimd'
 import { fetchClientMetadataResource } from '@better-auth/cimd/node'
 import { allowedClientDocument, chatgptEnabled } from '@/lib/chatgpt/config'
 import { oauthOptions } from '@/lib/chatgpt/oauth'
+import { oauthRateRules } from '@/lib/chatgpt/admission'
 
 let instance: ReturnType<typeof buildAuth> | undefined
 let pool: Pool | undefined
@@ -57,7 +58,7 @@ function buildAuth() {
       additionalFields: { bannedUntil: { type: 'date', required: false, input: false },
         disabled: { type: 'boolean', required: false, defaultValue: false, input: false } } },
     rateLimit: { enabled: true, storage: 'database', window: 60, max: 60,
-      customRules: { '/sign-in/email': { window: 60, max: 5 }, '/sign-up/email': { window: 60, max: 3 } } },
+      customRules: { '/sign-in/email': { window: 60, max: 5 }, '/sign-up/email': { window: 60, max: 3 }, ...oauthRateRules } },
     databaseHooks: { session: { create: { before: async session => {
       const result = await authPool().query('select disabled, "bannedUntil" from amountly_auth."user" where id=$1', [session.userId])
       const user = result.rows[0]

@@ -41,6 +41,10 @@ async function main(){
  execFileSync(path.join(bin,'pg_ctl'),['-D',data,'-l',path.join(root,'postgres.log'),'-o',`-k ${socket} -h ''`,'-w','start'],{stdio:'pipe'});started=true
  sql(`create role authenticated;create role amountly_data_runtime login noinherit;grant authenticated to amountly_data_runtime;create schema auth;create table auth.users(id uuid primary key);create table public.users(id uuid primary key,is_active boolean);create function auth.uid() returns uuid language sql stable as $$select (coalesce(nullif(current_setting('request.jwt.claims',true),''),'{}')::jsonb->>'sub')::uuid$$;grant usage on schema auth,public to authenticated;grant select on public.users to authenticated;insert into auth.users values('${owner}');insert into public.users values('${owner}',true);`)
  sql(fs.readFileSync('ops/render/capture-drafts.sql','utf8'))
+ // Match the production storage boundary in this isolated sample backend.
+ sql('create table amountly_files.receipts(path text primary key,owner_id uuid not null,content_type text not null,contents bytea not null,created_at timestamptz default now())')
+ sql('grant select,insert on amountly_files.receipts to authenticated;alter table amountly_files.receipts enable row level security;create policy own_receipt on amountly_files.receipts to authenticated using(owner_id=auth.uid()) with check(owner_id=auth.uid())')
+ sql(fs.readFileSync('ops/render/receipt-storage-quota.sql','utf8'))
  class OwnedPool extends Pool{constructor(){super({host:socket,user:'amountly_data_runtime',database:'postgres',max:2});pool=this}}
  const {AiHttpError}=appLoader()('src/lib/ai/server.ts')
  const validator=appLoader({'./server':{AiHttpError}})('src/lib/ai/receipt-file.ts')

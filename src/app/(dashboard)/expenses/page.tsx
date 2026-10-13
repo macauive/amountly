@@ -457,7 +457,7 @@ function ExpensesWorkspace() {
 
     try {
       if (receiptFile && uploadedReceipt.current?.file !== receiptFile) {
-        uploadedReceipt.current = { file: receiptFile, path: await uploadReceipt(receiptFile) }
+        uploadedReceipt.current = { file: receiptFile, path: await uploadReceipt(receiptFile, activeCapture ?? undefined) }
       }
       if (!mounted.current) return
       const receiptPath = receiptFile ? uploadedReceipt.current?.path : selectedExpense?.receipt_path

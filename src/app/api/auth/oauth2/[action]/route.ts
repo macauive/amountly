@@ -7,6 +7,8 @@ import { z } from 'zod/v3'
 import { chatgptEnabled, allowedClientDocument, allowedClientCallback, mcpResource } from '@/lib/chatgpt/config'
 import { validateAuthorization, validateSignedQuery } from '@/lib/chatgpt/query'
 import { privateHeaders, rateLimit } from '@/lib/chatgpt/auth'
+import { admitIntegrationRequest } from '@/lib/chatgpt/admission'
+import { oauthRateOwner } from '@/lib/chatgpt/rate-owner'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -41,10 +43,10 @@ async function handle(request: Request, context: { params: Promise<{ action: str
     if (action === 'authorize' && request.method === 'GET') {
       for (const key of url.searchParams.keys()) if (!authorizeKeys.has(key)) throw new AiHttpError(400, 'Invalid authorization request')
       validateAuthorization(url.searchParams)
-      await rateLimit('oauth:authorize', 120)
     } else if (action === 'consent' && request.method === 'POST') {
       validateOrigin(request.headers, true)
-      await requireIdentity(request.headers)
+      const identity = await requireIdentity(request.headers)
+      await rateLimit(`oauth:consent:user:${identity.id}`, 120)
       const value = z.object({ accept: z.boolean(), oauth_query: z.string().max(4096) }).strict().parse(await readBoundedJson(request, 8192))
       await validateSignedQuery(value.oauth_query)
       body = JSON.stringify(value)
@@ -52,11 +54,23 @@ async function handle(request: Request, context: { params: Promise<{ action: str
       if (request.headers.has('cookie')) throw new AiHttpError(400, 'Cookies are not supported here')
       const origin = request.headers.get('origin')
       if (origin && origin !== 'https://chatgpt.com') throw new AiHttpError(403, 'Request not allowed')
-      await rateLimit(`oauth:${action}`, 120)
       body = await form(request)
     } else return Response.json({ error: 'Not found' }, { status: 404, headers: privateHeaders })
     if (action !== 'authorize' && url.search) throw new AiHttpError(400, 'Invalid request')
-    const response = await getAuth().handler(new Request(request.url, { method: request.method, headers: request.headers, body }))
+    const response = await admitIntegrationRequest(`oauth:${action}:${body ?? url.search}`, async () => {
+      if (action === 'authorize') {
+        // Anonymous authorization starts remain supported, without shared debt.
+        try {
+          const identity = await requireIdentity(request.headers, true)
+          await rateLimit(`oauth:authorize:user:${identity.id}`, 120)
+        } catch (error) { if (!(error instanceof AiHttpError && error.status === 401)) throw error }
+      } else if (action === 'token' || action === 'revoke') {
+        const owner = await oauthRateOwner(action, new URLSearchParams(body))
+        if (owner) await rateLimit(`oauth:${action}:user:${owner}`, 120)
+      }
+      // Quotas run before the provider consumes a code or rotates a refresh.
+      return getAuth().handler(new Request(request.url, { method: request.method, headers: request.headers, body }))
+    })
     const headers = new Headers(response.headers)
     for (const [key, value] of Object.entries(privateHeaders)) headers.set(key, value)
     if (response.status >= 400) {
@@ -68,7 +82,8 @@ async function handle(request: Request, context: { params: Promise<{ action: str
     return new Response(response.body, { status: response.status, headers })
   } catch (error) {
     return Response.json({ error: 'invalid_request', error_description: 'Connection request could not be completed. Start again in ChatGPT or Codex.' },
-      { status: error instanceof AiHttpError ? error.status : error instanceof z.ZodError ? 400 : 503, headers: privateHeaders })
+      { status: error instanceof AiHttpError ? error.status : error instanceof z.ZodError ? 400 : 503,
+        headers: error instanceof AiHttpError && error.status === 429 ? { ...privateHeaders, 'Retry-After': '60' } : privateHeaders })
   }
 }
 export const GET = handle
