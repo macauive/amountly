@@ -9,6 +9,23 @@ const inter = Inter({ subsets: ['latin'] })
 export const metadata: Metadata = {
   title: 'Amountly',
   description: 'AI-assisted accounting for bills, expenses, invoices, and financial next steps',
+  icons: {
+    icon: [
+      {
+        url: '/icon.png?v=transparent',
+        type: 'image/png',
+        sizes: '512x512',
+        media: '(prefers-color-scheme: light)',
+      },
+      {
+        url: '/amountly-icon-dark.png',
+        type: 'image/png',
+        sizes: '512x512',
+        media: '(prefers-color-scheme: dark)',
+      },
+    ],
+    apple: '/apple-icon.png?v=transparent',
+  },
 }
 
 export default async function RootLayout({
