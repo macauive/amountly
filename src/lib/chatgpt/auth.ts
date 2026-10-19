@@ -3,14 +3,15 @@ import { z } from 'zod/v3'
 import { authPool, getAuth } from '@/lib/platform/auth'
 import { clientForIdentity } from '@/lib/platform/server'
 import { AiHttpError } from '@/lib/ai/server'
-import { allowedClientDocument, chatgptEnabled, mcpResource, oauthIssuer, readScope, connectionScopes } from '@/lib/chatgpt/config'
+import { allowedOAuthClientId, chatgptEnabled, mcpResource, oauthIssuer, readScope, connectionScopes } from '@/lib/chatgpt/config'
 import type { ReviewClient } from '@/lib/financial-review/service'
 import { admitIntegrationRequest } from '@/lib/chatgpt/admission'
 
 export const privateHeaders = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }
 
-// Durable counters are keyed only by a proven owner. Anonymous traffic has
-// separate bounded admission and cannot spend a legitimate account's budget.
+// OAuth/MCP account counters use proven owners. Registration uses a separate
+// fixed service bucket; anonymous input cannot create arbitrary durable keys
+// or spend a legitimate account's budget.
 export async function rateLimit(key: string, max: number) {
   const result = await authPool().query(`insert into amountly_auth.mcp_rate (key, window_start, count)
     values ($1, date_trunc('minute', now()), 1)
@@ -47,7 +48,7 @@ export async function requireMcpIdentity(request: Request) {
     where a.token=$1 and g.revoked_at is null and g.granted_at > now()-interval '7 days'`,
     [createHash('sha256').update(token.slice('amt_at_'.length)).digest('hex')])
   const clientId: unknown = lookup.rows[0]?.clientId
-  if (typeof clientId !== 'string' || !allowedClientDocument(clientId)) throw new AiHttpError(401, 'Reconnect Amountly to continue.')
+  if (typeof clientId !== 'string' || !allowedOAuthClientId(clientId)) throw new AiHttpError(401, 'Reconnect Amountly to continue.')
   let introspected: unknown
   try { introspected = await getAuth().api.validateAmountlyToken({ body: { token, clientId } }) }
   catch { throw new AiHttpError(401, 'Reconnect Amountly to continue.') }

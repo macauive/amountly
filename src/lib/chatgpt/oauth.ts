@@ -1,11 +1,14 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { OAuthOptions } from '@better-auth/oauth-provider'
-import { allowedCallback, mcpResource, oauthScopes } from '@/lib/chatgpt/config'
+import { allowedCallback, dcrEnabled, mcpResource, oauthScopes } from '@/lib/chatgpt/config'
 export function oauthOptions(): OAuthOptions<string[]> {
   return {
     loginPage: '/chatgpt/login', consentPage: '/chatgpt/consent',
     scopes: [...oauthScopes], grantTypes: ['authorization_code', 'refresh_token'],
-    disableJwtPlugin: true, allowDynamicClientRegistration: false,
+    disableJwtPlugin: true, allowDynamicClientRegistration: dcrEnabled(),
+    allowUnauthenticatedClientRegistration: dcrEnabled(), clientRegistrationRequirePKCE: true,
+    clientRegistrationDefaultScopes: [...oauthScopes],
+    generateClientId: () => 'amt_dcr_' + randomBytes(32).toString('base64url'),
     clientPrivileges: () => false, resourcePrivileges: () => false,
     resources: [{ identifier: mcpResource(), name: 'Amountly financial records', allowedScopes: [...oauthScopes], accessTokenTtl: 600 }],
     enforcePerClientResources: true, clientRegistrationDefaultResources: [mcpResource()],

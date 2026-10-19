@@ -28,7 +28,8 @@
     "test:expense-workflow": "node --test tests/expense-navigation.test.cjs tests/expense-workflow-navigation.test.cjs tests/solo-onboarding.test.cjs",
     "test:financial-review": "node --test tests/financial-review.test.cjs tests/financial-review-api.test.cjs",
     "test:financial-review:local": "node tests/financial-review-local.cjs",
-    "test:chatgpt": "node --test tests/chatgpt.test.cjs tests/chatgpt-codex.test.cjs",
+    "test:chatgpt": "node --test tests/chatgpt.test.cjs tests/chatgpt-codex.test.cjs tests/chatgpt-dcr.test.cjs",
+    "test:chatgpt:dcr:local": "node --import tsx tests/chatgpt-dcr-http-local.ts",
     "test:chatgpt:local": "node --import tsx tests/chatgpt-local.ts"
   },
   "dependencies": {

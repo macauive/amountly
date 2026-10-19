@@ -4,7 +4,8 @@ import { validateOrigin, requireIdentity } from '@/lib/platform/server'
 import { readBoundedJson } from '@/lib/http'
 import { AiHttpError } from '@/lib/ai/server'
 import { z } from 'zod/v3'
-import { chatgptEnabled, allowedClientDocument, allowedClientCallback, mcpResource } from '@/lib/chatgpt/config'
+import { chatgptEnabled, dcrEnabled, allowedOAuthClientId, allowedClientCallback, mcpResource } from '@/lib/chatgpt/config'
+import { validateRegistration } from '@/lib/chatgpt/registration'
 import { validateAuthorization, validateSignedQuery } from '@/lib/chatgpt/query'
 import { privateHeaders, rateLimit } from '@/lib/chatgpt/auth'
 import { admitIntegrationRequest } from '@/lib/chatgpt/admission'
@@ -29,7 +30,7 @@ async function form(request: Request) {
   }; text += decoder.decode() } finally { reader.releaseLock() }
   const values = new URLSearchParams(text)
   for (const key of values.keys()) if (!formKeys.has(key) || values.getAll(key).length !== 1) throw new AiHttpError(400, 'Invalid request')
-  if (!allowedClientDocument(values.get('client_id') ?? '')) throw new AiHttpError(400, 'Invalid client')
+  if (!allowedOAuthClientId(values.get('client_id') ?? '')) throw new AiHttpError(400, 'Invalid client')
   if (values.has('redirect_uri') && !allowedClientCallback(values.get('client_id')!, values.get('redirect_uri')!)) throw new AiHttpError(400, 'Invalid callback')
   if (values.has('resource') && values.get('resource') !== mcpResource()) throw new AiHttpError(400, 'Invalid resource')
   return values.toString()
@@ -40,7 +41,16 @@ async function handle(request: Request, context: { params: Promise<{ action: str
     const { action } = await context.params
     let body: string | undefined
     const url = new URL(request.url)
-    if (action === 'authorize' && request.method === 'GET') {
+    if (action === 'register' && request.method === 'POST' && dcrEnabled()) {
+      if (request.headers.has('cookie') || request.headers.has('authorization')) throw new AiHttpError(400, 'Credentials are not supported here')
+      const origin = request.headers.get('origin')
+      if (origin && origin !== 'https://chatgpt.com') throw new AiHttpError(403, 'Request not allowed')
+      if (request.headers.get('content-type')?.split(';')[0] !== 'application/json') throw new AiHttpError(415, 'Expected JSON')
+      // A fixed service bucket bounds anonymous client creation without creating
+      // attacker-chosen durable keys or spending any signed-in user's quota.
+      await rateLimit('oauth:register', 10)
+      body = JSON.stringify(validateRegistration(await readBoundedJson(request, 4096)))
+    } else if (action === 'authorize' && request.method === 'GET') {
       for (const key of url.searchParams.keys()) if (!authorizeKeys.has(key)) throw new AiHttpError(400, 'Invalid authorization request')
       validateAuthorization(url.searchParams)
     } else if (action === 'consent' && request.method === 'POST') {

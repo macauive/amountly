@@ -1,12 +1,13 @@
 import { verifyOAuthQueryParams } from '@better-auth/oauth-provider'
 import { getAuth } from '@/lib/platform/auth'
 import { AiHttpError } from '@/lib/ai/server'
-import { allowedClientCallback, mcpResource, oauthScopes, readScope } from '@/lib/chatgpt/config'
+import { allowedClientCallback, allowedOAuthClientId, mcpResource, oauthScopes, readScope } from '@/lib/chatgpt/config'
 
 export function validateAuthorization(query: URLSearchParams) {
   if (query.toString().length > 4096) throw new AiHttpError(400, 'Invalid connection request')
   for (const key of query.keys()) if (query.getAll(key).length !== 1) throw new AiHttpError(400, 'Invalid connection request')
-  if (!allowedClientCallback(query.get('client_id') ?? '', query.get('redirect_uri') ?? '')
+  if (!allowedOAuthClientId(query.get('client_id') ?? '')
+    || !allowedClientCallback(query.get('client_id') ?? '', query.get('redirect_uri') ?? '')
     || query.get('response_type') !== 'code' || query.get('resource') !== mcpResource()
     || query.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(query.get('code_challenge') ?? '')
     || !(query.get('state') ?? '').length || (query.get('state') ?? '').length > 2048) throw new AiHttpError(400, 'Invalid connection request')

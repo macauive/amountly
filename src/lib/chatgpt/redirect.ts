@@ -7,6 +7,18 @@ export function allowedClientDocument(value: string) {
   } catch { return false }
 }
 
+// An identifier format, not proof of registration. The OAuth provider resolves
+// these IDs from its client store and validates the stored callback and policy.
+export function isDcrClientId(value: string) {
+  return /^amt_dcr_[A-Za-z0-9_-]{43}$/.test(value)
+}
+
+export function allowedDcrCallback(value: string) {
+  if (!allowedCallback(value)) return false
+  const url = new URL(value)
+  return url.origin === 'https://chatgpt.com' && url.href === value
+}
+
 export function allowedCallback(value: string) {
   try {
     const url = new URL(value)
@@ -19,6 +31,7 @@ export function allowedCallback(value: string) {
 }
 
 export function allowedClientCallback(clientId: string, callback: string) {
+  if (isDcrClientId(clientId)) return allowedDcrCallback(callback)
   if (!allowedClientDocument(clientId) || !allowedCallback(callback)) return false
   const client = new URL(clientId), redirect = new URL(callback)
   const codex = /^\/oauth\/codex(?:\/([A-Za-z0-9_-]{1,128}))?\/client\.json$/.exec(client.pathname)
