@@ -5,13 +5,14 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Loader2, MailCheck, RotateCw } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { usesRenderBackend } from '@/lib/platform/config'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp'
 import { Label } from '@/components/ui/label'
 
-const OTP_LENGTH = 8
+const OTP_LENGTH = usesRenderBackend ? 6 : 8
 const VERIFICATION_TYPES = ['signup', 'email', 'magiclink', 'recovery', 'invite', 'email_change'] as const
 
 type VerificationType = (typeof VERIFICATION_TYPES)[number]
@@ -122,7 +123,9 @@ function VerifyPageContent() {
         </div>
         <CardTitle className="text-2xl font-bold">Verify your email</CardTitle>
         <CardDescription>
-          Enter the {OTP_LENGTH}-digit code from your email, or open the link we sent and we&apos;ll finish verification automatically.
+          {usesRenderBackend
+            ? `Enter the ${OTP_LENGTH}-digit code from your email to verify your account.`
+            : `Enter the ${OTP_LENGTH}-digit code from your email, or open the link we sent and we'll finish verification automatically.`}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

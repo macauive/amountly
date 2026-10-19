@@ -66,6 +66,40 @@ test('SMTP failure is generic and always closes the transport', async () => {
   assert.equal(mail.closed(), 1)
 })
 
+test('verification UI accepts the active backend code length and submits the received code', async () => {
+  const React = require('react')
+  for (const [backend, code] of [['render', '123456'], ['supabase', '12345678']]) {
+    const states = [code, 'recipient@example.invalid', null, null, false, false]
+    const submitted = [], routes = []
+    const load = loadApp({
+      react: { ...React, useState: () => [states.shift(), () => {}], useEffect: () => {}, useMemo: fn => fn() },
+      'next/navigation': { useRouter: () => ({ replace: path => routes.push(path) }), useSearchParams: () => new URLSearchParams() },
+      '@/components/ui/button': { Button: 'button' },
+      '@/components/ui/card': Object.fromEntries(['Card', 'CardContent', 'CardDescription', 'CardFooter', 'CardHeader', 'CardTitle'].map(name => [name, name])),
+      '@/components/ui/input': { Input: 'input' },
+      '@/components/ui/input-otp': { InputOTP: 'input-otp', InputOTPGroup: 'otp-group', InputOTPSlot: 'otp-slot' },
+      '@/components/ui/label': { Label: 'label' },
+      '@/contexts/AuthContext': { useAuth: () => ({ isLoading: false, verifyEmailOtp: async values => {
+        submitted.push(values); return { error: null, nextPath: '/account-type' }
+      } }) },
+    }, { NEXT_PUBLIC_BACKEND: backend })
+    const page = load('src/app/(auth)/verify/page.tsx').default()
+    const tree = page.props.children.type()
+    const nodes = []
+    function visit(node) {
+      if (Array.isArray(node)) return node.forEach(visit)
+      if (!node || typeof node !== 'object') return
+      nodes.push(node); visit(node.props?.children)
+    }
+    visit(tree)
+    assert.equal(nodes.find(node => node.props?.id === 'verification-code').props.maxLength, code.length)
+    const button = nodes.find(node => node.props?.onClick && JSON.stringify(node.props.children).includes('Verify code'))
+    await button.props.onClick()
+    assert.deepEqual(JSON.parse(JSON.stringify(submitted)), [{ email: 'recipient@example.invalid', token: code, type: 'signup' }])
+    assert.deepEqual(routes, ['/account-type'])
+  }
+})
+
 test('real auth routes verify signup and reset passwords with hashed single-use codes through Resend', async () => {
   const realAuth = require('better-auth')
   const { memoryAdapter } = require('better-auth/adapters/memory')
