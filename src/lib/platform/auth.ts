@@ -3,7 +3,7 @@ import { emailOTP } from 'better-auth/plugins'
 import { hashPassword, verifyPassword } from 'better-auth/crypto'
 import { compare } from 'bcryptjs'
 import { Pool } from 'pg'
-import nodemailer from 'nodemailer'
+import { sendAuthCode } from '@/lib/platform/auth-email'
 import { appOrigin, requiredSecret } from '@/lib/platform/config'
 import { oauthProvider, getOAuthProviderApi } from '@better-auth/oauth-provider'
 import { createAuthEndpoint } from 'better-auth/api'
@@ -20,21 +20,6 @@ export function authPool() {
   return pool ??= new Pool({ connectionString: requiredSecret('AUTH_DATABASE_URL'),
     max: 3, connectionTimeoutMillis: 10000, idleTimeoutMillis: 30000,
     options: '-c search_path=amountly_auth,pg_catalog -c statement_timeout=10000' })
-}
-
-async function sendCode(email: string, otp: string, type: string) {
-  // Fixed Proton endpoint; callers cannot choose an SMTP destination or headers.
-  const sender = requiredSecret('SMTP_FROM')
-  if (!/^[^\s<>\r\n]+@[^\s<>\r\n]+$/.test(sender)) throw new Error('Invalid mail configuration')
-  const transport = nodemailer.createTransport({ host: 'smtp.protonmail.ch', port: 587,
-    secure: false, requireTLS: true, tls: { minVersion: 'TLSv1.2', rejectUnauthorized: true },
-    auth: { user: requiredSecret('SMTP_USERNAME'), pass: requiredSecret('SMTP_PASSWORD') },
-    connectionTimeout: 10000, socketTimeout: 15000, logger: false, debug: false })
-  try {
-    await transport.sendMail({ from: { name: 'Amountly', address: sender }, to: email,
-      subject: type === 'forget-password' ? 'Reset your Amountly password' : 'Verify your Amountly email',
-      text: `Your Amountly verification code is ${otp}. It expires in 10 minutes. If you did not request this, ignore this email.` })
-  } finally { transport.close() }
 }
 
 function buildAuth() {
@@ -67,7 +52,7 @@ function buildAuth() {
       if (profile.rows[0]?.is_active === false) return false
       return { data: session }
     } } } },
-    plugins: [emailOTP({ sendVerificationOTP: ({ email, otp, type }) => sendCode(email, otp, type),
+    plugins: [emailOTP({ sendVerificationOTP: ({ email, otp, type }) => sendAuthCode(email, otp, type),
       sendVerificationOnSignUp: true, overrideDefaultEmailVerification: true,
       disableSignUp: true, storeOTP: 'hashed', otpLength: 6, expiresIn: 600, allowedAttempts: 3 }),
       ...(provider ? [provider, cimd({ fetchClientMetadataResource, metadataProfile: 'mcp-2026-07-28',

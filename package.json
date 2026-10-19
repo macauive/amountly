@@ -21,7 +21,7 @@
     "test:accountant": "node --test tests/accountant-packet.test.cjs tests/accountant-export.test.cjs tests/workspace-packet-scope.test.cjs tests/receipt-export.test.cjs tests/accountant-packet-ui.test.cjs",
     "test:expense-review": "node --test tests/expense-review.test.cjs tests/solo-expense-review.test.cjs",
     "test:solo-accountant:render": "node --import tsx tests/solo-accountant-render-local.ts",
-    "test:auth": "node --test tests/auth.test.cjs",
+    "test:auth": "node --test tests/auth.test.cjs tests/auth-email.test.cjs",
     "test:capture": "node --test tests/capture.test.cjs",
     "test:receipts": "node --test tests/receipt-api.test.cjs tests/receipt-file.test.cjs tests/receipt-review.test.cjs",
     "test:receipts:render": "node --import tsx tests/receipt-render-local.ts",

@@ -20,7 +20,7 @@ async function call(path:string, body?:object, origin='http://127.0.0.1:4191') {
   return handle(new Request('http://127.0.0.1:4191/api/auth/'+path,{method:body?'POST':'GET',headers:{Origin:origin,Cookie:cookie,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}),{params:Promise.resolve({all:path.split('/')})})
 }
 async function main() {
-  process.env.SMTP_FROM='sender@example.invalid';process.env.SMTP_USERNAME='sender@example.invalid';process.env.SMTP_PASSWORD=randomBytes(32).toString('hex')
+  process.env.RESEND_FROM='sender@example.invalid';process.env.RESEND_API_KEY=randomBytes(32).toString('hex')
   assert.equal((await call('sign-up/email',{email,password,name:'Synthetic auth test'},'https://evil.example')).status,403)
   const signup = await call('sign-up/email',{email,password,name:'Synthetic auth test'})
   assert.equal(signup.status,200)
