@@ -8,9 +8,7 @@ import { appOrigin, requiredSecret } from '@/lib/platform/config'
 import { oauthProvider, getOAuthProviderApi } from '@better-auth/oauth-provider'
 import { createAuthEndpoint } from 'better-auth/api'
 import { z } from 'zod'
-import { cimd } from '@better-auth/cimd'
-import { fetchClientMetadataResource } from '@better-auth/cimd/node'
-import { allowedClientDocument, chatgptEnabled } from '@/lib/chatgpt/config'
+import { chatgptEnabled } from '@/lib/chatgpt/config'
 import { oauthOptions } from '@/lib/chatgpt/oauth'
 import { oauthRateRules } from '@/lib/chatgpt/admission'
 
@@ -55,17 +53,13 @@ function buildAuth() {
     plugins: [emailOTP({ sendVerificationOTP: ({ email, otp, type }) => sendAuthCode(email, otp, type),
       sendVerificationOnSignUp: true, overrideDefaultEmailVerification: true,
       disableSignUp: true, storeOTP: 'hashed', otpLength: 6, expiresIn: 600, allowedAttempts: 3 }),
-      ...(provider ? [provider, cimd({ fetchClientMetadataResource, metadataProfile: 'mcp-2026-07-28',
-        isMetadataDocumentUrlAllowed: allowedClientDocument, maxCacheEntries: 100,
-        metadataRevalidationInterval: '10m',
-      }), { id: 'amountly-protected-resource', endpoints: {
+      ...(provider ? [provider, { id: 'amountly-protected-resource', endpoints: {
         // Server API only. The public catch-all and OAuth router never forward
         // this endpoint. Resource validation does not require the caller to
         // possess ChatGPT's private client signing key.
         validateAmountlyToken: createAuthEndpoint('/internal/amountly-token', {
           method: 'POST', body: z.object({ token: z.string().max(256), clientId: z.string().max(256) }),
-        // Use the initialized provider options, including CIMD's discovery
-        // extension. Fresh options cannot validate a discovered ChatGPT client.
+        // Validate through the initialized DCR provider and its stored client policy.
         }, async ctx => getOAuthProviderApi(ctx, provider.options).requireActiveAccessToken(ctx.body.token, ctx.body.clientId)),
       } }] : [])],
     logger: { disabled: true },

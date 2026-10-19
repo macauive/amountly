@@ -4,7 +4,6 @@ const { randomBytes, createHash } = require('node:crypto')
 const { betterAuth, getAuthTables } = require('better-auth')
 const { memoryAdapter } = require('better-auth/adapters/memory')
 const { oauthProvider, getOAuthProviderApi } = require('@better-auth/oauth-provider')
-const { cimd } = require('@better-auth/cimd')
 const { createAuthEndpoint } = require('better-auth/api')
 const { z } = require('zod')
 const loadApp = require('./load-app.cjs')
@@ -59,10 +58,7 @@ async function harness(enabled = true) {
   for (const model of Object.keys(getAuthTables({ plugins: [provider] }))) store[model] = []
   auth = betterAuth({ baseURL: origin, secret: randomBytes(32).toString('hex'), database: memoryAdapter(store),
     trustedOrigins: [origin], emailAndPassword: { enabled: true }, logger: { disabled: true },
-    advanced: { database: { generateId: 'uuid' } }, plugins: [provider, cimd({
-      metadataProfile: 'mcp-2026-07-28', isMetadataDocumentUrlAllowed: load('src/lib/chatgpt/config.ts').allowedClientDocument,
-      fetchClientMetadataResource: async () => { throw new Error('DCR must not fetch CIMD documents') },
-    }), { id: 'amountly-protected-resource', endpoints: {
+    advanced: { database: { generateId: 'uuid' } }, plugins: [provider, { id: 'amountly-protected-resource', endpoints: {
       validateAmountlyToken: createAuthEndpoint('/internal/amountly-token', {
         method: 'POST', body: z.object({ token: z.string().max(256), clientId: z.string().max(256) }),
       }, async ctx => getOAuthProviderApi(ctx, provider.options).requireActiveAccessToken(ctx.body.token, ctx.body.clientId)),
@@ -115,10 +111,10 @@ async function harness(enabled = true) {
     assert.ok(load('src/lib/chatgpt/redirect.ts').allowedConnectionRedirect(target.href, signed, origin))
     assert.equal(target.searchParams.get('state'), fields.state)
     assert.equal(target.searchParams.get('iss'), origin + '/api/auth')
-    return { response, verifier, code: target.searchParams.get('code'), error: target.searchParams.get('error'), clientId }
+    return { response, verifier, code: target.searchParams.get('code'), error: target.searchParams.get('error'), clientId, callback: fields.redirect_uri }
   }
   function exchange(grant, overrides = {}) { return call('token', { client_id: grant.clientId, grant_type: 'authorization_code',
-    code: grant.code, code_verifier: grant.verifier, redirect_uri: callback, resource, ...overrides }) }
+    code: grant.code, code_verifier: grant.verifier, redirect_uri: grant.callback, resource, ...overrides }) }
   const mcp = load('src/app/mcp/route.ts')
   async function tool(token, name = 'tools/list', args = {}) {
     const response = await mcp.POST(new Request(origin + '/mcp', { method: 'POST', headers: {
@@ -156,7 +152,7 @@ test('DCR is opt-in; disabled registration and unknown client CRUD stay inaccess
   const discovery = await h.load('src/app/.well-known/oauth-authorization-server/api/auth/route.ts').GET(new Request(origin + '/.well-known/oauth-authorization-server/api/auth'))
   const value = await discovery.json()
   assert.equal(value.registration_endpoint, undefined)
-  assert.equal(value.client_id_metadata_document_supported, true)
+  assert.equal(value.client_id_metadata_document_supported, undefined)
 })
 
 test('DCR creates a bounded public client; invalid metadata cannot create clients or remote fetches', async () => {
@@ -164,9 +160,9 @@ test('DCR creates a bounded public client; invalid metadata cannot create client
   const discovery = await h.load('src/app/.well-known/oauth-authorization-server/api/auth/route.ts').GET(new Request(origin + '/.well-known/oauth-authorization-server/api/auth'))
   const value = await discovery.json()
   assert.equal(value.registration_endpoint, origin + '/api/auth/oauth2/register')
-  assert.equal(value.client_id_metadata_document_supported, true)
+  assert.equal(value.client_id_metadata_document_supported, undefined)
   for (const changes of [
-    { redirect_uris: ['https://evil.example/callback'] }, { redirect_uris: ['http://127.0.0.1:4321/callback'] },
+    { redirect_uris: ['https://evil.example/callback'] }, { redirect_uris: ['http://192.168.1.1:4321/callback'] },
     { redirect_uris: [callback + '?next=evil'] }, { redirect_uris: [callback + '#x'] },
     { redirect_uris: ['https://chatgpt.com/path/../connector_platform_oauth_redirect'] },
     { token_endpoint_auth_method: 'client_secret_post' }, { scope: 'amountly:write' },
@@ -217,7 +213,7 @@ test('real provider rejects unregistered IDs, callback substitution, wrong scope
   assert.equal(denied.error, 'access_denied'); assert.equal(denied.code, null)
 })
 
-test('DCR consent, PKCE, real token verification, all five MCP tools, refresh and revocation work', async () => {
+test('DCR consent, PKCE, five tools and token lifecycle work', async () => {
   const h = await harness(), id = await h.register(), other = await h.register()
   const wrong = await h.authorize(id)
   assert.ok([400, 401].includes((await h.exchange(wrong, { code_verifier: randomBytes(32).toString('base64url') })).status))
@@ -269,4 +265,106 @@ test('DCR consent, PKCE, real token verification, all five MCP tools, refresh an
   assert.equal((await h.tool(revocationTokens.access_token)).response.status, 401)
   assert.equal((await h.call('revoke', { client_id: id, token: revocationTokens.refresh_token })).status, 200)
   assert.ok([400, 401].includes((await h.call('token', { client_id: id, grant_type: 'refresh_token', refresh_token: revocationTokens.refresh_token, resource })).status))
+})
+
+
+test('DCR is the sole registration path and old URL clients cannot authorize, refresh or revoke', async () => {
+  const h = await harness()
+  const value = await (await h.load('src/app/.well-known/oauth-authorization-server/api/auth/route.ts').GET(new Request(origin))).json()
+  assert.equal(value.client_id_metadata_document_supported, undefined)
+  assert.equal(value.token_endpoint_auth_signing_alg_values_supported, undefined)
+  assert.equal(value.revocation_endpoint_auth_signing_alg_values_supported, undefined)
+  assert.deepEqual(value.token_endpoint_auth_methods_supported, ['none'])
+  assert.deepEqual(value.revocation_endpoint_auth_methods_supported, ['none'])
+  assert.equal(value.registration_endpoint, origin + '/api/auth/oauth2/register')
+  for (const client_id of ['https://chatgpt.com/oauth/client.json', 'https://chatgpt.com/oauth/codex/client.json']) {
+    assert.equal(h.load('src/lib/chatgpt/config.ts').allowedOAuthClientId(client_id), false)
+    assert.equal((await h.authorize(client_id)).response.status, 400)
+    assert.equal((await h.call('token', { client_id, grant_type: 'refresh_token', refresh_token: 'amt_rt_synthetic' })).status, 400)
+    assert.equal((await h.call('revoke', { client_id, token: 'amt_rt_synthetic' })).status, 400)
+  }
+  const id = await h.register()
+  for (const field of ['client_assertion', 'client_assertion_type', 'client_secret'])
+    assert.equal((await h.call('token', { client_id: id, grant_type: 'refresh_token', refresh_token: 'amt_rt_synthetic', [field]: 'unsupported' })).status, 400)
+})
+
+test('native DCR metadata rejects arbitrary hosts, aliases, mixed callbacks and privilege fields', async () => {
+  const h = await harness()
+  const native = { ...metadata, client_name: 'Codex', application_type: 'native', redirect_uris: ['http://127.0.0.1:4321/callback'] }
+  for (const uri of ['http://127.1:4321/callback', 'http://2130706433:4321/callback', 'http://0x7f000001:4321/callback',
+    'http://[::1]:4321/callback', 'http://localhost.evil.example:4321/callback', 'http://192.168.1.1:4321/callback',
+    'https://127.0.0.1:4321/callback', 'http://user@localhost:4321/callback', 'http://localhost:0/callback',
+    'http://localhost:65536/callback', 'http://localhost:4321/path/../callback', 'http://localhost:4321/callback?x=1',
+    'http://localhost:4321/callback#x', 'http://LOCALHOST:4321/callback', 'http://localhost:04321/callback',
+    'http://localhost:4321/other']) {
+    h.counters.delete('oauth:register')
+    assert.equal((await h.call('register', { ...native, redirect_uris: [uri] })).status, 400, uri)
+  }
+  for (const change of [{ redirect_uris: [callback] }, { application_type: 'web' },
+    { redirect_uris: [native.redirect_uris[0], callback] }, { token_endpoint_auth_method: 'private_key_jwt' },
+    { require_pkce: false }, { skip_consent: true }]) {
+    h.counters.delete('oauth:register')
+    assert.equal((await h.call('register', { ...native, ...change })).status, 400)
+  }
+  assert.equal(h.store.oauthClient.length, 0)
+})
+
+test('native DCR supports loopback port selection while binding issued codes to their actual callback', async () => {
+  const h = await harness()
+  for (const uri of ['http://127.0.0.1:64903/callback', 'http://localhost:5421/callback', 'http://127.0.0.1:4321/callback/synthetic-id']) {
+    const clientId = await h.register({ ...metadata, client_name: 'Codex', redirect_uris: [uri] })
+    assert.equal(h.store.oauthClient.find(row => row.clientId === clientId).applicationType, 'native')
+    const changed = new URL(uri); changed.port = '5432'
+    const selectedPort = await h.authorize(clientId, { redirect_uri: changed.href })
+    assert.ok(selectedPort.code, 'RFC 8252 permits choosing the listener port at authorization')
+    assert.ok([400, 401].includes((await h.exchange(selectedPort, { redirect_uri: uri })).status), 'code binds the actual authorization callback port')
+    for (const invalid of [uri.replace('/callback', '/other'), uri.includes('127.0.0.1') ? uri.replace('127.0.0.1', 'localhost') : uri.replace('localhost', '127.0.0.1')]) {
+      const wrong = await h.authorize(clientId, { redirect_uri: invalid })
+      assert.ok(wrong.rejected || [400, 401].includes(wrong.response.status), 'native callback host and path remain bound')
+    }
+    const grant = await h.authorize(clientId, { redirect_uri: uri })
+    assert.ok([400, 401].includes((await h.exchange(grant, { redirect_uri: changed.href })).status))
+    const fresh = await h.authorize(clientId, { redirect_uri: uri })
+    const issued = await h.exchange(fresh); assert.equal(issued.status, 200)
+    const tokens = await issued.json()
+    assert.equal((await h.tool(tokens.access_token)).response.status, 200)
+    const refreshed = await h.call('token', { client_id: clientId, grant_type: 'refresh_token', refresh_token: tokens.refresh_token, resource })
+    assert.equal(refreshed.status, 200)
+    const rotated = await refreshed.json()
+    assert.equal((await h.call('revoke', { client_id: clientId, token: rotated.refresh_token })).status, 200)
+    assert.equal((await h.tool(rotated.access_token)).response.status, 401)
+  }
+})
+
+
+test('consent labels do not mistake self-registered native clients for verified OpenAI apps', async () => {
+  const h = await harness(), label = h.load('src/lib/chatgpt/redirect.ts').connectionClientLabel
+  assert.equal(label(new URLSearchParams({ client_id: 'amt_dcr_' + 'a'.repeat(43), redirect_uri: 'http://127.0.0.1:4321/callback' }).toString()), 'your native MCP client')
+  assert.equal(label(new URLSearchParams({ client_id: 'amt_dcr_' + 'a'.repeat(43), redirect_uri: callback }).toString()), 'ChatGPT')
+})
+
+test('disconnect revokes all and only the signed-in owner capabilities, including refresh-only families', async () => {
+  const owner = '00000000-0000-4000-8000-000000000001', foreign = '00000000-0000-4000-8000-000000000002'
+  const rows = { oauthAccessToken: [{ userId: owner }, { userId: foreign }],
+    oauthRefreshToken: [{ userId: owner }, { userId: owner }, { userId: foreign }],
+    oauthConsent: [{ userId: owner }, { userId: foreign }], mcp_grants: [{ userId: owner }, { userId: foreign }] }
+  let released = false
+  const connection = { release() { released = true }, async query(sql, values) {
+    if (['begin', 'commit', 'rollback'].includes(sql)) return { rows: [] }
+    assert.deepEqual(Array.from(values), [owner], 'every mutation is scoped to the authenticated owner')
+    assert.match(sql, /where (?:user_id|"userId")=\$1/)
+    const table = Object.keys(rows).find(name => sql.includes(name))
+    assert.ok(table)
+    for (const row of rows[table]) if (row.userId === owner) row.revoked = true
+    return { rows: [] }
+  } }
+  const load = loadApp({ '@/lib/platform/auth': { authPool: () => ({ connect: async () => connection }) },
+    '@/lib/platform/server': { validateOrigin: () => {}, requireIdentity: async () => ({ id: owner }) },
+    '@/lib/chatgpt/auth': { privateHeaders: {}, mcpAuthError: error => { throw error } },
+  }, { NEXT_PUBLIC_BACKEND: 'render', AMOUNTLY_CHATGPT: 'enabled' })
+  const response = await load('src/app/api/chatgpt/disconnect/route.ts').POST(new Request(origin + '/api/chatgpt/disconnect', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }))
+  assert.equal(response.status, 200)
+  assert.equal(released, true)
+  for (const table of Object.values(rows)) for (const row of table) assert.equal(!!row.revoked, row.userId === owner)
 })

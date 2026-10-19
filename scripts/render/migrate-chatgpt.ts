@@ -1,8 +1,5 @@
 import { getMigrations } from 'better-auth/db/migration'
 import { oauthProvider } from '@better-auth/oauth-provider'
-import { cimd } from '@better-auth/cimd'
-import { fetchClientMetadataResource } from '@better-auth/cimd/node'
-import { allowedClientDocument } from '../../src/lib/chatgpt/config'
 import { oauthOptions } from '../../src/lib/chatgpt/oauth'
 import { Pool } from 'pg'
 import { createHash } from 'node:crypto'
@@ -20,7 +17,6 @@ async function main() {
       // seed runs only after these tables exist.
       const plan = await getMigrations({ database: owner, advanced: { database: { generateId: 'uuid' } }, plugins: [
         oauthProvider(oauthOptions()),
-        cimd({ fetchClientMetadataResource, isMetadataDocumentUrlAllowed: allowedClientDocument }),
       ] })
       if (plan.unsafeChanges.length || plan.schemaProblems.length || plan.toBeAdded.length) {
         console.log(JSON.stringify({ unsafe: plan.unsafeChanges, problems: plan.schemaProblems,

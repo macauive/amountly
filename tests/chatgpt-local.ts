@@ -4,7 +4,6 @@ import { Pool } from 'pg'
 import { hashPassword } from 'better-auth/crypto'
 import { getAuth, authPool } from '../src/lib/platform/auth'
 import { validateClaims } from '../src/lib/chatgpt/auth'
-import { generateKeyPair, exportJWK, SignJWT } from 'jose'
 import { request as httpRequest } from 'node:http'
 
 const url = new URL(process.env.RENDER_TEST_ADMIN_URL ?? '')
@@ -15,7 +14,7 @@ const origin=process.env.AMOUNTLY_APP_ORIGIN ?? base, resource=origin+'/mcp', is
 assert.equal(new URL(base).hostname,'127.0.0.1')
 const ids=[randomUUID(),randomUUID()], orgs=[randomUUID(),randomUUID()], expenses=[randomUUID(),randomUUID()]
 const invoice=randomUUID(), vendorBill=randomUUID(), vendor=randomUUID()
-const clientId='https://chatgpt.com/oauth/qa-'+randomUUID()+'/client.json'
+let clientId=''
 const callback='https://chatgpt.com/connector_platform_oauth_redirect'
 const password=randomBytes(24).toString('hex'), emails=ids.map(id=>'chatgpt-qa-'+id+'@example.invalid')
 let cookie='', token='', counter=1
@@ -25,9 +24,9 @@ async function api(path:string, body?:object, extra:Record<string,string>={}) {
 async function tokenRequest(values:Record<string,string>) {
   return fetch(base+'/api/auth/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:clientId,...values})})
 }
-async function authorize(forceConsent=true) {
+async function authorize(forceConsent=true,scope='amountly:read offline_access email') {
   const verifier=randomBytes(32).toString('base64url'), state='openai_platform_oauth_relay__'+randomBytes(750).toString('base64url')
-  const query=new URLSearchParams({client_id:clientId,redirect_uri:callback,response_type:'code',scope:'amountly:read offline_access email',state,
+  const query=new URLSearchParams({client_id:clientId,redirect_uri:callback,response_type:'code',scope,state,
     resource,code_challenge_method:'S256',code_challenge:createHash('sha256').update(verifier).digest('base64url')})
   if(forceConsent) query.set('prompt','consent')
   // Undici rewrites Sec-Fetch-Mode to cors. Use HTTP directly to exercise the
@@ -82,9 +81,12 @@ async function main() {
   await db.query("insert into vendors(id,organization_id,user_id,name) values($1,$2,$3,'Synthetic vendor')",[vendor,orgs[0],ids[0]])
   await db.query("insert into vendor_bills(id,organization_id,vendor_id,user_id,bill_number,date,due_date,subtotal,total,currency,status) values($1,$2,$3,$4,'Synthetic bill','2026-09-01','2026-09-30',75,75,'USD','overdue')",[vendorBill,orgs[0],vendor,ids[0]])
   const metadata=await (await api('/.well-known/oauth-authorization-server/api/auth')).json()
-  assert.equal(metadata.issuer,issuer); assert.equal(metadata.client_id_metadata_document_supported,true)
-  await db.query('insert into amountly_auth."oauthClient"(id,"clientId",name,"redirectUris",scopes,"grantTypes","responseTypes","tokenEndpointAuthMethod","requirePKCE",disabled,"skipConsent") values($1,$2,\'ChatGPT synthetic protocol client\',$3::jsonb,$4::jsonb,$5::jsonb,\'["code"]\'::jsonb,\'none\',true,false,false)',[randomUUID(),clientId,JSON.stringify([callback]),JSON.stringify(['amountly:read','offline_access','email']),JSON.stringify(['authorization_code','refresh_token'])])
-  await db.query('insert into amountly_auth."oauthClientResource"(id,"clientId","resourceId") values($1,$2,$3)',[randomUUID(),clientId,resource])
+  assert.equal(metadata.issuer,issuer); assert.equal(metadata.client_id_metadata_document_supported,undefined);assert.deepEqual(metadata.token_endpoint_auth_methods_supported,['none'])
+  const registration=await fetch(base+'/api/auth/oauth2/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    client_name:'ChatGPT',redirect_uris:[callback],token_endpoint_auth_method:'none',grant_types:['authorization_code','refresh_token'],response_types:['code'],scope:'amountly:read offline_access email'})})
+  assert.equal(registration.status,201)
+  clientId=(await registration.json()).client_id
+  assert.match(clientId,/^amt_dcr_[A-Za-z0-9_-]{43}$/)
   const login=await api('/api/auth/sign-in/email',{email:emails[0],password});assert.equal(login.status,200)
   cookie=login.headers.getSetCookie().map(value=>value.split(';')[0]).join('; ')
   assert.ok(cookie); assert.equal((await login.json()).token,undefined)
@@ -120,23 +122,11 @@ async function main() {
     assert.ok(!text.includes(orgs[1]));assert.ok(!text.includes('receipt_url'))
     if(name==='get_financial_review') assert.deepEqual(result.result.structuredContent.totals,{unpaid:500,obligations:75,expenses:23.5})
   }
-  // Resolve OpenAI's public client document through the actual server's CIMD
-  // extension. Only this loopback database receives the synthetic token below;
-  // OpenAI's private signing key is neither available nor needed for validation.
-  const discoveredClient='https://chatgpt.com/oauth/client.json'
-  const discoveryQuery=new URLSearchParams({client_id:discoveredClient,redirect_uri:callback,response_type:'code',scope:'amountly:read',state:'synthetic-discovery',resource,
-    code_challenge_method:'S256',code_challenge:'a'.repeat(43)})
-  assert.equal((await api('/api/auth/oauth2/authorize?'+discoveryQuery)).status,200,'actual OpenAI CIMD resolves')
-  const discovered=await db.query('select "clientDiscoveryId" from amountly_auth."oauthClient" where "clientId"=$1',[discoveredClient])
-  assert.equal(discovered.rows[0]?.clientDiscoveryId,'cimd')
-  const discoveredToken='amt_at_'+randomBytes(24).toString('base64url'), discoveredCode=createHash('sha256').update(randomBytes(24)).digest('hex')
-  await db.query('insert into amountly_auth.mcp_grants(authorization_code_id,user_id) values($1,$2)',[discoveredCode,ids[0]])
-  await db.query('insert into amountly_auth."oauthAccessToken"(token,"clientId","sessionId","userId","authorizationCodeId",resources,scopes,"expiresAt","createdAt") select $1,$2,id,$3,$4,$5::jsonb,$6::jsonb,now()+interval \'10 minutes\',now() from amountly_auth.session where "userId"=$3 order by "createdAt" desc limit 1',
-    [createHash('sha256').update(discoveredToken.slice(7)).digest('hex'),discoveredClient,ids[0],discoveredCode,JSON.stringify([resource]),JSON.stringify(['amountly:read'])])
-  const beforeDiscoveryToken=token;token=discoveredToken
-  assert.equal((await call('tools/list')).response.status,200,'initialized CIMD options validate a read-only token without refresh scope')
-  assert.equal((await call('get_financial_review',period)).result.result.isError,undefined,'discovered client reads authorized data')
-  token=beforeDiscoveryToken
+  const narrow=await authorize(true,'amountly:read'), narrowIssued=await tokenRequest({grant_type:'authorization_code',code:narrow.code,code_verifier:narrow.verifier,redirect_uri:callback,resource})
+  assert.equal(narrowIssued.status,200)
+  const fullToken=token;token=(await narrowIssued.json()).access_token
+  assert.equal((await call('tools/list')).response.status,200,'read-only DCR token does not require refresh scope')
+  token=fullToken
   for(const tool of list.result.result.tools) { assert.deepEqual(tool.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});assert.deepEqual(tool.securitySchemes[0].scopes,['amountly:read']) }
   assert.equal((await call('get_financial_record',{kind:'expenses',id:expenses[1]})).result.result.isError,true,'foreign ID denied')
   assert.equal((await call('summarize_expenses',{...period,user_id:ids[1]})).result.result.isError,true,'forged owner rejected')
@@ -168,21 +158,11 @@ async function main() {
   // grant remains revoked, even if the token row itself is not yet marked.
   await db.query('update amountly_auth."oauthAccessToken" set revoked=null where token=$1',[createHash('sha256').update(token.slice(7)).digest('hex')])
   assert.equal((await call('tools/list')).response.status,401,'late token cannot restore a disconnected grant')
-  // ChatGPT's live CIMD supports private_key_jwt. Exercise that path with a
-  // synthetic RSA key; no OpenAI client secrets or signing keys are needed.
-  const keys=await generateKeyPair('RS256'), publicKey={...await exportJWK(keys.publicKey),kid:'synthetic',alg:'RS256',use:'sig'}
-  await db.query('update amountly_auth."oauthClient" set "tokenEndpointAuthMethod"=\'private_key_jwt\',jwks=$1 where "clientId"=$2',[JSON.stringify({keys:[publicKey]}),clientId])
-  const signed=await authorize()
-  const assertion=await new SignJWT({}).setProtectedHeader({alg:'RS256',kid:'synthetic'}).setIssuer(clientId).setSubject(clientId)
-    .setAudience(issuer+'/oauth2/token').setJti(randomUUID()).setIssuedAt().setExpirationTime('2m').sign(keys.privateKey)
-  const assertionFields={client_assertion:assertion,client_assertion_type:'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'}
-  const signedExchange=await tokenRequest({grant_type:'authorization_code',code:signed.code,code_verifier:signed.verifier,redirect_uri:callback,resource,...assertionFields})
-  assert.equal(signedExchange.status,200,'private_key_jwt works')
-  token=(await signedExchange.json()).access_token
-  assert.equal((await call('tools/list')).response.status,200,'resource accepts signed-client token')
-  await db.query("update amountly_auth.mcp_grants set granted_at=now()-interval '8 days' where authorization_code_id=$1",[createHash('sha256').update(signed.code).digest('hex')])
+  const expiring=await authorize()
+  const expiredIssued=await tokenRequest({grant_type:'authorization_code',code:expiring.code,code_verifier:expiring.verifier,redirect_uri:callback,resource})
+  assert.equal(expiredIssued.status,200);token=(await expiredIssued.json()).access_token
+  await db.query("update amountly_auth.mcp_grants set granted_at=now()-interval '8 days' where authorization_code_id=$1",[createHash('sha256').update(expiring.code).digest('hex')])
   assert.equal((await call('tools/list')).response.status,401,'consent expires after seven days')
-  assert.ok([400,401].includes((await tokenRequest({grant_type:'authorization_code',code:signed.code,code_verifier:signed.verifier,redirect_uri:callback,resource,...assertionFields})).status),'client assertion cannot be replayed')
   assert.equal((await api('/api/account/deletion-request',{user_id:ids[1]})).status,400,'forged deletion input fails closed')
   assert.equal((await api('/api/account/deletion-request',{})).status,200)
   assert.equal((await db.query('select user_id from amountly_auth.deletion_requests where user_id=any($1::uuid[])',[ids])).rowCount,1)

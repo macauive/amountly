@@ -1,4 +1,5 @@
 export const dynamic = 'force-dynamic'
+import { connectionClientLabel } from '@/lib/chatgpt/redirect'
 import { ConnectionForm } from '@/components/chatgpt/connection-form'
 import { validateSignedQuery, signedSearchParams } from '@/lib/chatgpt/query'
 import { chatgptEnabled } from '@/lib/chatgpt/config'
@@ -10,6 +11,6 @@ export default async function Page({ searchParams }: { searchParams: Promise<Rec
   try {
     query = await validateSignedQuery(signedSearchParams(params))
   } catch { return <main className="mx-auto max-w-md p-8"><h1 className="text-2xl font-semibold">Connection request expired</h1><p className="mt-4">Start account linking again in ChatGPT or Codex.</p></main> }
-  const host = new URLSearchParams(query).get('client_id')?.startsWith('https://chatgpt.com/oauth/codex/') ? 'Codex' : 'ChatGPT'
+  const host = connectionClientLabel(query)
   return <main className="mx-auto max-w-md space-y-6 p-8"><h1 className="text-2xl font-semibold">Connect Amountly to {host}</h1><p>Sign in to review the permissions before linking your account.</p><ConnectionForm query={query} /></main>
 }

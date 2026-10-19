@@ -14,7 +14,7 @@ import { oauthRateOwner } from '@/lib/chatgpt/rate-owner'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 const authorizeKeys = new Set(['client_id','redirect_uri','response_type','scope','state','code_challenge','code_challenge_method','resource','prompt','login_hint'])
-const formKeys = new Set(['grant_type','client_id','client_assertion','client_assertion_type','code','code_verifier','redirect_uri','resource','refresh_token','scope','token','token_type_hint'])
+const formKeys = new Set(['grant_type','client_id','code','code_verifier','redirect_uri','resource','refresh_token','scope','token','token_type_hint'])
 async function form(request: Request) {
   if (request.headers.get('content-type')?.split(';')[0] !== 'application/x-www-form-urlencoded') throw new AiHttpError(415, 'Expected form data')
   // Reuse the streaming byte cap before parsing a form, including chunked input.

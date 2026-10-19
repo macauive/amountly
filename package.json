@@ -33,7 +33,6 @@
     "test:chatgpt:local": "node --import tsx tests/chatgpt-local.ts"
   },
   "dependencies": {
-    "@better-auth/cimd": "1.7.7",
     "@better-auth/oauth-provider": "1.7.7",
     "@hookform/resolvers": "5.9.1",
     "@modelcontextprotocol/sdk": "1.32.0",

@@ -12,9 +12,7 @@ import { getMigrations } from 'better-auth/db/migration'
 import { emailOTP } from 'better-auth/plugins'
 import { hashPassword } from 'better-auth/crypto'
 import { oauthProvider } from '@better-auth/oauth-provider'
-import { cimd } from '@better-auth/cimd'
 import { oauthOptions } from '../src/lib/chatgpt/oauth'
-import { allowedClientDocument } from '../src/lib/chatgpt/config'
 
 async function main() {
 const exec = promisify(execFile), base = 'http://127.0.0.1:4191'
@@ -28,7 +26,8 @@ const data = join(scratch, 'postgres'), passwordFile = join(scratch, 'postgres-p
 const dbUrl = new URL('postgresql://127.0.0.1:54399/postgres')
 dbUrl.username = userInfo().username; dbUrl.password = dbPassword
 const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'development', NEXT_PUBLIC_BACKEND: 'render',
-  AMOUNTLY_CHATGPT: 'enabled', AMOUNTLY_CHATGPT_DCR: 'enabled', AMOUNTLY_APP_ORIGIN: base,
+  AMOUNTLY_CHATGPT: 'enabled', AMOUNTLY_CHATGPT_DCR: 'enabled',
+  AMOUNTLY_APP_ORIGIN: base,
   AUTH_DATABASE_URL: dbUrl.href, BETTER_AUTH_SECRET: secret(), POSTGREST_JWT_SECRET: secret(),
   NEXT_TELEMETRY_DISABLED: '1' }
 // Explicitly clear any inherited deployment/email secrets. This test uses only
@@ -36,7 +35,8 @@ const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'development', NEXT_P
 for (const key of ['RESEND_API_KEY', 'RESEND_FROM', 'AMOUNTLY_MIGRATION_DATABASE_URL', 'DATABASE_URL',
   'DATA_DATABASE_URL', 'OPENAI_API_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) delete env[key]
 Object.assign(process.env, { NODE_ENV: env.NODE_ENV, NEXT_PUBLIC_BACKEND: env.NEXT_PUBLIC_BACKEND,
-  AMOUNTLY_CHATGPT: env.AMOUNTLY_CHATGPT, AMOUNTLY_CHATGPT_DCR: env.AMOUNTLY_CHATGPT_DCR, AMOUNTLY_APP_ORIGIN: base })
+  AMOUNTLY_CHATGPT: env.AMOUNTLY_CHATGPT, AMOUNTLY_CHATGPT_DCR: env.AMOUNTLY_CHATGPT_DCR,
+  AMOUNTLY_APP_ORIGIN: base })
 let pgStarted = false, web: ReturnType<typeof spawn> | undefined, pool: Pool | undefined
 let stage = 'initialize', cookie = ''
 async function request(path: string, body?: unknown, headers: Record<string, string> = {}) {
@@ -44,18 +44,24 @@ async function request(path: string, body?: unknown, headers: Record<string, str
     headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body) })
 }
-function authorizeQuery(clientId: string) {
+function authorizeQuery(clientId: string, redirect = callback) {
   const verifier = randomBytes(32).toString('base64url')
-  return { verifier, query: new URLSearchParams({ client_id: clientId, redirect_uri: callback,
+  return { verifier, query: new URLSearchParams({ client_id: clientId, redirect_uri: redirect,
     response_type: 'code', resource, scope: 'amountly:read offline_access', state: 'local-' + randomUUID(),
     code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url'), prompt: 'consent' }) }
 }
-async function authorize(clientId: string) {
-  const grant = authorizeQuery(clientId)
+async function authorize(clientId: string, redirect = callback) {
+  const grant = authorizeQuery(clientId, redirect)
   const first = await request('/api/auth/oauth2/authorize?' + grant.query, undefined, { Accept: 'application/json' })
   assert.equal(first.status, 200)
   const loginUrl = new URL((await first.json()).url, base)
   assert.equal(loginUrl.origin, base); assert.equal(loginUrl.pathname, '/chatgpt/login')
+  const target = await finishLogin(loginUrl)
+  assert.equal(target.origin + target.pathname, redirect)
+  assert.equal(target.searchParams.get('state'), grant.query.get('state'))
+  return { ...grant, code: target.searchParams.get('code')! }
+}
+async function finishLogin(loginUrl: URL) {
   const login = await request('/api/auth/sign-in/email', { email, password, oauth_query: loginUrl.searchParams.toString() }, { Origin: base })
   assert.equal(login.status, 200)
   cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
@@ -67,12 +73,10 @@ async function authorize(clientId: string) {
   const accepted = await request('/api/auth/oauth2/consent', { accept: true, oauth_query: consentUrl.searchParams.toString() }, { Cookie: cookie, Origin: base })
   assert.equal(accepted.status, 200)
   const consent = await accepted.json(), target = new URL(consent.url ?? consent.redirect_uri)
-  assert.equal(target.origin + target.pathname, callback)
-  assert.equal(target.searchParams.get('state'), grant.query.get('state'))
   assert.equal(target.searchParams.get('iss'), base + '/api/auth')
   assert.ok(target.searchParams.get('code'))
   // Do not navigate to the external callback. All code exchange stays local.
-  return { ...grant, code: target.searchParams.get('code')! }
+  return target
 }
 async function tokenRequest(values: Record<string, string>) {
   return fetch(base + '/api/auth/oauth2/token', { method: 'POST', redirect: 'manual',
@@ -81,6 +85,50 @@ async function tokenRequest(values: Record<string, string>) {
 async function tools(token: string) {
   return request('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, {
     Authorization: 'Bearer ' + token, Accept: 'application/json, text/event-stream' })
+}
+async function codexLogin() {
+  const name = 'amountly-local-' + randomUUID()
+  const config = ['-c', 'mcp_servers.' + name + '.url="' + resource + '"', '-c', 'mcp_oauth_credentials_store="keyring"']
+  const client = spawn('codex', [...config, 'mcp', 'login', name, '--no-browser', '--oauth-client-registration', 'auto',
+    '--scopes', 'amountly:read,offline_access'], { stdio: ['pipe', 'pipe', 'pipe'] })
+  let output = '', completed = false
+  const exited = new Promise<number | null>(resolveExit => client.once('exit', code => resolveExit(code)))
+  client.once('error', () => { output = 'local-client-start-error' })
+  const authorization = new Promise<URL>((resolveUrl, rejectUrl) => {
+    const timeout = setTimeout(() => rejectUrl(new Error('Local client authorization timeout')), 45000)
+    const capture = (chunk: Buffer) => {
+      output = (output + chunk.toString()).slice(-32768)
+      const match = output.match(/http:\/\/127\.0\.0\.1:4191\/api\/auth\/oauth2\/authorize\?[^\s<>]+/)
+      if (match) { clearTimeout(timeout); resolveUrl(new URL(match[0])) }
+    }
+    client.stdout.on('data', capture); client.stderr.on('data', capture)
+    void exited.then(() => { clearTimeout(timeout); rejectUrl(new Error('Local client exited before authorization')) })
+  })
+  try {
+    const url = await authorization
+    assert.equal(url.origin, base); assert.match(url.searchParams.get('client_id') ?? '', /^amt_dcr_/)
+    const response = await request(url.pathname + url.search, undefined, { Accept: 'application/json' })
+    assert.equal(response.status, 200)
+    const loginUrl = new URL((await response.json()).url, base)
+    assert.equal(loginUrl.origin, base); assert.equal(loginUrl.pathname, '/chatgpt/login')
+    const target = await finishLogin(loginUrl)
+    const expected = new URL(url.searchParams.get('redirect_uri')!)
+    assert.ok(['127.0.0.1', 'localhost'].includes(expected.hostname))
+    assert.equal(target.origin + target.pathname, expected.origin + expected.pathname)
+    assert.equal(target.searchParams.get('state'), url.searchParams.get('state'))
+    client.stdin.end(target.href + '\n')
+    const timeout = setTimeout(() => client.kill('SIGTERM'), 30000)
+    const code = await exited; clearTimeout(timeout)
+    assert.equal(code, 0)
+    const stored = await pool!.query('select count(*)::int as count from amountly_auth."oauthAccessToken" where "clientId"=$1', [url.searchParams.get('client_id')])
+    assert.ok(stored.rows[0].count > 0, 'Codex itself exchanged the code')
+    completed = true
+  } finally {
+    client.kill('SIGTERM'); output = ''
+    // Target a unique local-only MCP name. Never change saved production config.
+    await exec('codex', [...config, 'mcp', 'logout', name], { timeout: 15000 })
+    if (!completed) console.error('Local Codex login did not complete; captured output was discarded')
+  }
 }
 try {
   assert.ok(!(await readdir(process.cwd())).some(name => /^\.env(?:\.|$)/.test(name) && name !== '.env.example'),
@@ -99,8 +147,7 @@ try {
   const plan = await getMigrations({ database: pool, advanced: { database: { generateId: 'uuid' } },
     user: { additionalFields: { disabled: { type: 'boolean', required: false, defaultValue: false }, bannedUntil: { type: 'date', required: false } } },
     rateLimit: { enabled: true, storage: 'database' }, plugins: [emailOTP({ sendVerificationOTP: async () => { throw new Error('Email disabled in local DCR rehearsal') } }),
-      oauthProvider(oauthOptions()), cimd({ isMetadataDocumentUrlAllowed: allowedClientDocument,
-        fetchClientMetadataResource: async () => { throw new Error('DCR rehearsal does not fetch remote client documents') } })] })
+      oauthProvider(oauthOptions())] })
   const sql = (await plan.compileMigrations()).replace('create table "oauthClientAssertion" ("id" uuid', 'create table "oauthClientAssertion" ("id" text')
   stage = 'apply generated local auth schema'
   await pool.query(sql)
@@ -123,6 +170,8 @@ try {
   stage = 'HTTP discovery and registration'
   const discovery = await (await request('/.well-known/oauth-authorization-server/api/auth')).json()
   assert.equal(discovery.registration_endpoint, base + '/api/auth/oauth2/register')
+  assert.equal(discovery.client_id_metadata_document_supported, undefined)
+  assert.deepEqual(discovery.token_endpoint_auth_methods_supported, ['none'])
   const registration = await request('/api/auth/oauth2/register', { client_name: 'ChatGPT', redirect_uris: [callback],
     token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' })
   assert.equal(registration.status, 201)
@@ -144,13 +193,46 @@ try {
   assert.equal(refreshed.status, 200)
   const rotated = await refreshed.json()
   assert.ok(rotated.refresh_token !== tokens.refresh_token)
-  const revoked = await fetch(base + '/api/auth/oauth2/revoke', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: client.client_id, token: rotated.refresh_token }) })
-  assert.equal(revoked.status, 200)
-  assert.equal((await tools(rotated.access_token)).status, 401)
-  console.log('PASS: actual Next.js + disposable PostgreSQL: DCR discovery/registration, verified login, signed consent, PKCE exchange, five-tool discovery, refresh and revocation')
+  stage = 'owner disconnect including a refresh-only client'
+  const orphanRegistration = await request('/api/auth/oauth2/register', { client_name: 'Local refresh-only client', redirect_uris: [callback],
+    token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' })
+  assert.equal(orphanRegistration.status, 201)
+  const orphan = await orphanRegistration.json(), orphanGrant = await authorize(orphan.client_id)
+  const orphanIssued = await tokenRequest({ client_id: orphan.client_id, grant_type: 'authorization_code', code: orphanGrant.code,
+    code_verifier: orphanGrant.verifier, redirect_uri: callback, resource })
+  assert.equal(orphanIssued.status, 200)
+  const orphanTokens = await orphanIssued.json()
+  await pool.query('delete from amountly_auth."oauthAccessToken" where "clientId"=$1', [orphan.client_id])
+  stage = 'disconnect HTTP response'
+  const disconnected = await request('/api/chatgpt/disconnect', {}, { Cookie: cookie, Origin: base })
+  assert.equal(disconnected.status, 200, 'disconnect HTTP status')
+  assert.equal((await tools(rotated.access_token)).status, 401, 'disconnected access token is rejected')
+  stage = 'disconnect rejects refresh tokens including refresh-only family'
+  for (const [id, refresh] of [[client.client_id, rotated.refresh_token], [orphan.client_id, orphanTokens.refresh_token]])
+    assert.ok([400, 401].includes((await tokenRequest({ client_id: id, grant_type: 'refresh_token', refresh_token: refresh, resource })).status), 'disconnected refresh token is rejected')
+  stage = 'native DCR HTTP callback and token exchange'
+  const nativeCallback = 'http://127.0.0.1:64903/callback'
+  const nativeRegistration = await request('/api/auth/oauth2/register', { client_name: 'Codex', redirect_uris: ['http://127.0.0.1/callback'],
+    token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' })
+  assert.equal(nativeRegistration.status, 201)
+  const native = await nativeRegistration.json()
+  assert.equal(native.application_type, 'native')
+  const nativeGrant = await authorize(native.client_id, nativeCallback)
+  const nativeIssued = await tokenRequest({ client_id: native.client_id, grant_type: 'authorization_code', code: nativeGrant.code,
+    code_verifier: nativeGrant.verifier, redirect_uri: nativeCallback, resource })
+  assert.equal(nativeIssued.status, 200)
+  const nativeTokens = await nativeIssued.json()
+  assert.equal((await tools(nativeTokens.access_token)).status, 200)
+  assert.equal((await fetch(base + '/api/auth/oauth2/revoke', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: native.client_id, token: nativeTokens.refresh_token }) })).status, 200)
+  if (process.argv.includes('--codex')) {
+    stage = 'installed Codex automatic DCR login'
+    await codexLogin()
+    console.log('PASS: installed Codex CLI auto-selected DCR and completed its own token exchange; test credential removed')
+  }
+  console.log('PASS: actual Next.js + disposable PostgreSQL, DCR only: discovery, ChatGPT/native DCR registration, login/consent, PKCE, five tools, refresh and revocation')
   if (process.argv.includes('--browser')) {
-    const browser = authorizeQuery(client.client_id)
+    const browser = process.argv.includes('--browser-native') ? authorizeQuery(native.client_id, nativeCallback) : authorizeQuery(client.client_id)
     const response = await request('/api/auth/oauth2/authorize?' + browser.query, undefined, { Accept: 'application/json' })
     assert.equal(response.status, 200)
     const loginUrl = new URL((await response.json()).url, base)

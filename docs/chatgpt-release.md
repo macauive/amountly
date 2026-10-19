@@ -9,13 +9,15 @@ users, rather than organizations.
 
 ## Authentication and boundaries
 
-- Better Auth 1.7.7 OAuth provider and CIMD, with only allowlisted HTTPS OpenAI
-  client documents. ChatGPT uses its HTTPS callbacks; Codex uses registered HTTP
-  loopback callbacks on exact `127.0.0.1` or `localhost` hosts. Only the port may
-  vary from the client metadata. Client-specific callback paths must match.
-  Dynamic registration and client CRUD are off.
-- Authorization code with S256 PKCE, resource binding, issuer identification,
-  opaque hashed access and refresh tokens, and `private_key_jwt` support.
+- Better Auth 1.7.7 OAuth provider with public Dynamic Client Registration (DCR)
+  as the only client-registration method. Client-document discovery and signed
+  client assertions are removed. Clients receive stored opaque IDs; old URL-based
+  client IDs must reconnect. No client secret is required.
+- Canonical HTTPS ChatGPT callbacks and bounded native HTTP loopback callbacks
+  on exact `127.0.0.1` or `localhost` hosts. Native clients may choose their
+  listener port at authorization; each issued code binds that exact callback.
+- Authorization code with mandatory S256 PKCE, user consent, resource binding,
+  issuer identification and opaque hashed access/refresh tokens.
 - Access tokens last ten minutes. Read consent and refresh access expire after
   seven days. Reused codes/refresh tokens revoke their families.
 - Every MCP request rechecks its grant, login session, verification and account
@@ -42,7 +44,8 @@ contains a 400 USD remaining invoice balance, a 75 USD overdue bill, and 203.50 
 in October 1-3 expenses. Reviewer credentials are outside Git in an owner-only
 file and must be entered separately in OpenAI's review details.
 
-Enable `AMOUNTLY_CHATGPT=enabled`, `AMOUNTLY_REVIEW_MODE=account`, and the exact
+Enable `AMOUNTLY_CHATGPT=enabled`, `AMOUNTLY_CHATGPT_DCR=enabled`,
+`AMOUNTLY_REVIEW_MODE=account`, and the exact
 `OPENAI_APPS_DOMAIN_CHALLENGE` supplied by the current OpenAI draft. Retain the
 existing compute and runtime-role credentials. To stop new MCP/OAuth access,
 disable `AMOUNTLY_CHATGPT` and redeploy; keep the private migration and grant
@@ -50,20 +53,18 @@ tombstones. Do not restore a whole financial database to roll back app code.
 
 ## Verification and submission
 
-Local verification includes existing financial/security regressions, database
-security checks, six boundary tests, lint, and a Node 24 Docker build. The actual
-HTTP OAuth suite passes in a 512 MB / 0.5 CPU production container, covering all
-five tools, foreign records, injection minimization, malformed input, issuer and
-resource binding, S256, code/refresh/assertion replay, account disablement,
-disconnect including late token writes, seven-day consent expiry, CSRF and
-deletion-request ownership. Browser verification checks selectable review dates
-and source records using the designated QA account.
+The DCR-only candidate is local until separately authorized for deployment.
+Verification includes web/native registration, real provider PKCE exchange,
+resource/issuer/state binding, five read-only tool handlers, ownership/redaction,
+code/refresh replay, account disablement and owner-scoped disconnect. The
+standalone rehearsal uses actual Next.js routes and a disposable auth database;
+it does not provide the financial PostgREST/RLS backend. An optional installed
+Codex CLI test verifies automatic DCR selection and the client's own token exchange.
+See `docs/chatgpt-dcr-local.md` for commands and local-only boundaries.
 
-Live OpenAI discovery now finds all five tools and its latest MCP scan reports
-no issues. The Finance package metadata and skill checks pass. A regression test
-resolves OpenAI's actual public client metadata and validates a synthetic token
-through the initialized CIMD provider; the earlier fresh-options implementation
-fails that test with HTTP 401. Refresh access is optional for tool calls.
+Earlier release evidence and recordings do not establish the current OpenAI
+submission connection state. A new hosted connection and tool scan must succeed
+before claiming this authentication change resolves review access.
 
 The captioned walkthrough at `/review/walkthrough.mp4` contains actual production
 reviewer screens, OAuth consent, OpenAI discovery, and captured MCP responses for

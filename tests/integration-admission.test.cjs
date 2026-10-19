@@ -1,11 +1,11 @@
 const test = require('node:test'), assert = require('node:assert/strict')
 const { createHash } = require('node:crypto')
 const loadApp = require('./load-app.cjs')
-const origin = 'https://app.example.invalid', client = 'https://chatgpt.com/oauth/client.json'
+const origin = 'https://app.example.invalid', client = 'amt_dcr_' + 'a'.repeat(43)
 const owner = '00000000-0000-4000-8000-000000000001', other = '00000000-0000-4000-8000-000000000002'
 const sid = '00000000-0000-4000-8000-000000000003'
 class BoundaryError extends Error { constructor(status, message) { super(message); this.status = status } }
-const env = { AMOUNTLY_APP_ORIGIN: origin, NEXT_PUBLIC_BACKEND: 'render', AMOUNTLY_CHATGPT: 'enabled', NODE_ENV: 'production' }
+const env = { AMOUNTLY_APP_ORIGIN: origin, NEXT_PUBLIC_BACKEND: 'render', AMOUNTLY_CHATGPT: 'enabled', AMOUNTLY_CHATGPT_DCR: 'enabled', NODE_ENV: 'production' }
 
 test('anonymous hash quotas and cache churn cannot spend an unrelated credential budget', async () => {
   const { createAdmissionLimiter } = loadApp()('src/lib/chatgpt/admission.ts')
@@ -24,15 +24,15 @@ test('anonymous hash quotas and cache churn cannot spend an unrelated credential
   assert.equal(await admit('third',async()=> true),true,'processing slots recover')
 })
 
-function mcpHarness() {
+function mcpHarness(registeredClient = client) {
   const counts = new Map(), valid = 'amt_at_'+'v'.repeat(32), unknown = 'amt_at_'+'x'.repeat(32)
-  const claims = {active:true,iss:origin+'/api/auth',aud:origin+'/mcp',sub:owner,client_id:client,
+  const claims = {active:true,iss:origin+'/api/auth',aud:origin+'/mcp',sub:owner,client_id:registeredClient,
     exp:Date.now()/1000+600,scope:'amountly:read',token_type:'Bearer',sid}
   const pool = {query:async(sql,args)=>{
     if(sql.startsWith('insert into amountly_auth.mcp_rate')) {
       counts.set(args[0],(counts.get(args[0])??0)+1);return {rows:[{count:counts.get(args[0])}]}
     }
-    if(sql.includes('select a."clientId"')) return {rows:args[0]===createHash('sha256').update(valid.slice(7)).digest('hex')?[{clientId:client}]:[]}
+    if(sql.includes('select a."clientId"')) return {rows:args[0]===createHash('sha256').update(valid.slice(7)).digest('hex')?[{clientId:registeredClient}]:[]}
     if(sql.includes('select u.id, u.email'))return {rows:[{id:owner,email:'synthetic@example.invalid',emailVerified:true,disabled:false,is_active:true}]}
     throw Error('Unexpected query')
   }}
@@ -51,6 +51,16 @@ test('fabricated MCP bearer floods never debit durable user quota and valid iden
   assert.deepEqual([...h.counts.keys()],['mcp:user:'+owner])
   for(let i=1;i<30;i++) await h.api.requireMcpIdentity(request())
   await assert.rejects(h.api.requireMcpIdentity(request()),error=>error.status===429)
+})
+
+test('legacy URL registrations cannot retain MCP access after DCR-only cutover', async()=>{
+  for (const legacy of ['https://chatgpt.com/oauth/client.json', 'https://chatgpt.com/oauth/codex/client.json']) {
+    const h=mcpHarness(legacy)
+    await assert.rejects(h.api.requireMcpIdentity(new Request(origin+'/mcp', {
+      headers:{authorization:'Bearer '+h.valid},
+    })), error=>error.status===401)
+    assert.equal(h.counts.size,0)
+  }
 })
 
 test('OAuth admission owner requires matching PKCE or a real client-bound token, including after session expiry',async()=>{
