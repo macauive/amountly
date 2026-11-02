@@ -18,6 +18,10 @@ test('actual DCR provider supports Codex native PKCE, grant attribution and rota
         const grant=grants.find(row=>row[0]===values[0])
         return {rows:verification&&grant?[{value:verification.value,user_id:grant[1]}]:[]}
       }
+      if(sql.includes('as "grantActive"') && sql.includes('"oauthRefreshToken"')) {
+        const token=store.oauthRefreshToken.find(row=>row.token===values[0]&&row.clientId===values[1]&&!row.revoked&&row.expiresAt>new Date())
+        return {rows:token?[{grantActive:!agedGrants.has(token.authorizationCodeId),sessionActive:true,accountActive:true}]:[]}
+      }
       if(sql.includes('select t."userId"')) {
         const table=sql.includes('"oauthRefreshToken"')?'oauthRefreshToken':'oauthAccessToken'
         return {rows:store[table].filter(row=>row.token===values[0]&&row.clientId===values[1]&&!row.revoked
@@ -107,12 +111,17 @@ test('actual DCR provider supports Codex native PKCE, grant attribution and rota
   let tokens=await (await call('token',tokenValues(grant))).json()
   agedGrants.add(createHash('sha256').update(grant.code).digest('hex'))
   counts.set('oauth:token:user:'+signup.user.id,0)
+  const expired=await call('token',{client_id:stable,grant_type:'refresh_token',refresh_token:tokens.refresh_token,resource})
+  assert.equal(expired.status,400)
+  assert.equal((await expired.json()).error,'invalid_grant')
+  agedGrants.clear()
+  counts.set('oauth:token:user:'+signup.user.id,0)
   for(let i=0;i<120;i++) {
     const response=await call('token',{client_id:stable,grant_type:'refresh_token',refresh_token:tokens.refresh_token,resource})
-    assert.equal(response.status,200,'still-valid provider refresh stays usable after MCP grant ages out')
+    assert.equal(response.status,200,'active rotating refresh stays usable within owner quota')
     tokens=await response.json()
   }
-  assert.equal((await call('token',{client_id:stable,grant_type:'refresh_token',refresh_token:tokens.refresh_token,resource})).status,429,'rotating old grant still debits its owner')
+  assert.equal((await call('token',{client_id:stable,grant_type:'refresh_token',refresh_token:tokens.refresh_token,resource})).status,429,'rotating refresh still debits its owner')
   counts.set('oauth:revoke:user:'+signup.user.id,120)
   for(const token of [tokens.refresh_token,'  '+tokens.refresh_token+'  ','bEaReR '+tokens.refresh_token,'DPoP '+tokens.refresh_token]) {
     assert.equal((await call('revoke',{client_id:stable,token})).status,429,'provider-equivalent token syntax cannot bypass quota')

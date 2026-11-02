@@ -32,8 +32,8 @@ function mcpHarness(registeredClient = client) {
     if(sql.startsWith('insert into amountly_auth.mcp_rate')) {
       counts.set(args[0],(counts.get(args[0])??0)+1);return {rows:[{count:counts.get(args[0])}]}
     }
-    if(sql.includes('select a."clientId"')) return {rows:args[0]===createHash('sha256').update(valid.slice(7)).digest('hex')?[{clientId:registeredClient}]:[]}
-    if(sql.includes('select u.id, u.email'))return {rows:[{id:owner,email:'synthetic@example.invalid',emailVerified:true,disabled:false,is_active:true}]}
+    if(sql.includes('select a."clientId"')) return {rows:args[0]===createHash('sha256').update(valid.slice(7)).digest('hex')?[{clientId:registeredClient,grantActive:true}]:[]}
+    if(sql.includes('select u.id, u.email'))return {rows:[{id:owner,email:'synthetic@example.invalid',emailVerified:true,disabled:false,is_active:true,sessionActive:true}]}
     throw Error('Unexpected query')
   }}
   const load = loadApp({'@/lib/platform/auth':{authPool:()=>pool,getAuth:()=>({api:{validateAmountlyToken:async()=>claims}})},
@@ -100,6 +100,7 @@ function oauthHarness() {
   let proof=owner, signedIn=false
   const load=loadApp({'@/lib/platform/auth':{getAuth:()=>({handler:async request=>{calls.push(request);return Response.json({access_token:'synthetic-response'})}})},
     '@/lib/platform/server':{validateOrigin:()=>{},requireIdentity:async()=>{if(!signedIn)throw new BoundaryError(401,'Sign in');return {id:owner}}},
+    '@/lib/chatgpt/lifecycle':{requireRefreshConnection:async()=>{}},
     '@/lib/chatgpt/rate-owner':{oauthRateOwner:async()=>proof},'@/lib/chatgpt/grant':{recordIssuedGrant:async()=>{}},
     '@/lib/chatgpt/auth':{privateHeaders:{'Cache-Control':'private, no-store'},rateLimit:async(key,max)=>{counts.set(key,(counts.get(key)??0)+1);if(counts.get(key)>max)throw new BoundaryError(429,'Busy')}},
     '@/lib/ai/server':{AiHttpError:BoundaryError}},env)

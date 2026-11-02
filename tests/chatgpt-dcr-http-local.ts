@@ -82,6 +82,23 @@ async function tokenRequest(values: Record<string, string>) {
   return fetch(base + '/api/auth/oauth2/token', { method: 'POST', redirect: 'manual',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(values) })
 }
+async function authorizeWithSession(clientId: string) {
+  const grant = authorizeQuery(clientId)
+  const started = await request('/api/auth/oauth2/authorize?' + grant.query, undefined, { Cookie: cookie, Accept: 'application/json' })
+  assert.equal(started.status, 200)
+  const consentUrl = new URL((await started.json()).url, base)
+  assert.equal(consentUrl.origin, base); assert.equal(consentUrl.pathname, '/chatgpt/consent')
+  const accepted = await request('/api/auth/oauth2/consent', { accept: true, oauth_query: consentUrl.searchParams.toString() }, { Cookie: cookie, Origin: base })
+  assert.equal(accepted.status, 200)
+  const result = await accepted.json(), target = new URL(result.url ?? result.redirect_uri)
+  assert.equal(target.origin + target.pathname, callback)
+  assert.equal(target.searchParams.get('state'), grant.query.get('state'))
+  assert.equal(target.searchParams.get('iss'), base + '/api/auth')
+  const issued = await tokenRequest({ client_id: clientId, grant_type: 'authorization_code', code: target.searchParams.get('code')!,
+    code_verifier: grant.verifier, redirect_uri: callback, resource })
+  assert.equal(issued.status, 200)
+  return issued.json()
+}
 async function tools(token: string) {
   return request('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, {
     Authorization: 'Bearer ' + token, Accept: 'application/json, text/event-stream' })
@@ -193,6 +210,94 @@ try {
   assert.equal(refreshed.status, 200)
   const rotated = await refreshed.json()
   assert.ok(rotated.refresh_token !== tokens.refresh_token)
+  stage = 'MCP initialize and refreshed-token use'
+  const initialized = await request('/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'local-lifecycle-test', version: '1.0' } } }, {
+    Authorization: 'Bearer ' + rotated.access_token, Accept: 'application/json, text/event-stream' })
+  assert.equal(initialized.status, 200)
+  assert.equal((await tools(rotated.access_token)).status, 200)
+  const refresh = () => tokenRequest({ client_id: client.client_id, grant_type: 'refresh_token', refresh_token: rotated.refresh_token, resource })
+  async function rejectsRefresh(reason: string) {
+    const before = await pool!.query('select count(*)::int as count from amountly_auth."oauthRefreshToken"')
+    const rejected = await refresh()
+    assert.equal(rejected.status, 400, reason)
+    assert.equal((await rejected.json()).error, 'invalid_grant')
+    assert.match(rejected.headers.get('X-Amountly-Request-Id') ?? '', /^[a-f0-9-]{36}$/)
+    assert.equal(rejected.headers.get('Cache-Control'), 'private, no-store')
+    const after = await pool!.query('select count(*)::int as count from amountly_auth."oauthRefreshToken"')
+    assert.equal(after.rows[0].count, before.rows[0].count, 'rejected refresh must not issue tokens')
+    const mcp = await tools(rotated.access_token)
+    assert.equal(mcp.status, 401)
+    assert.match(mcp.headers.get('WWW-Authenticate') ?? '', /invalid_token/)
+  }
+  stage = 'refresh just before the absolute grant cutoff'
+  await pool.query("update amountly_auth.mcp_grants set granted_at=now()-interval '7 days'+interval '1 minute' where user_id=$1", [userId])
+  const beforeCutoff = await refresh()
+  assert.equal(beforeCutoff.status, 200)
+  Object.assign(rotated, await beforeCutoff.json())
+  assert.equal((await tools(rotated.access_token)).status, 200)
+  stage = 'expired absolute grant rejects refresh before token issuance'
+  await pool.query("update amountly_auth.mcp_grants set granted_at=now()-interval '7 days'-interval '1 minute' where user_id=$1", [userId])
+  await rejectsRefresh('expired grant')
+  await pool.query('update amountly_auth.mcp_grants set granted_at=now() where user_id=$1', [userId])
+  stage = 'reauthorization with existing consent and no forced prompt'
+  const silentGrant = authorizeQuery(client.client_id)
+  silentGrant.query.delete('prompt')
+  const reusedConsent = await request('/api/auth/oauth2/authorize?' + silentGrant.query, undefined, { Cookie: cookie, Accept: 'application/json' })
+  assert.equal(reusedConsent.status, 200)
+  const reusedTarget = new URL((await reusedConsent.json()).url, base)
+  assert.equal(reusedTarget.origin + reusedTarget.pathname, callback)
+  assert.equal(reusedTarget.searchParams.get('state'), silentGrant.query.get('state'))
+  const reusedExchange = await tokenRequest({ client_id: client.client_id, grant_type: 'authorization_code', code: reusedTarget.searchParams.get('code')!,
+    code_verifier: silentGrant.verifier, redirect_uri: callback, resource })
+  assert.equal(reusedExchange.status, 200)
+  assert.equal((await tools((await reusedExchange.json()).access_token)).status, 200)
+  stage = 'revoked grant rejects refresh'
+  await pool.query('update amountly_auth.mcp_grants set revoked_at=now() where user_id=$1', [userId])
+  await rejectsRefresh('revoked grant')
+  await pool.query('update amountly_auth.mcp_grants set revoked_at=null where user_id=$1', [userId])
+  stage = 'expired browser session rejects refresh'
+  await pool.query(`update amountly_auth.session set "expiresAt"=now()-interval '1 minute' where "userId"=$1`, [userId])
+  await rejectsRefresh('expired session')
+  await pool.query(`update amountly_auth.session set "expiresAt"=now()+interval '7 days' where "userId"=$1`, [userId])
+  stage = 'disabled account rejects refresh'
+  await pool.query('update amountly_auth."user" set disabled=true where id=$1', [userId])
+  await rejectsRefresh('disabled account')
+  await pool.query('update amountly_auth."user" set disabled=false where id=$1', [userId])
+  stage = 'unverified, banned and inactive-profile accounts reject refresh'
+  await pool.query('update amountly_auth."user" set "emailVerified"=false where id=$1', [userId])
+  await rejectsRefresh('unverified account')
+  await pool.query(`update amountly_auth."user" set "emailVerified"=true, "bannedUntil"=now()+interval '1 day' where id=$1`, [userId])
+  await rejectsRefresh('banned account')
+  await pool.query('update amountly_auth."user" set "bannedUntil"=null where id=$1', [userId])
+  await pool.query('update public.users set is_active=false where id=$1', [userId])
+  await rejectsRefresh('inactive profile')
+  await pool.query('update public.users set is_active=true where id=$1', [userId])
+  stage = 'grant and browser-session ownership cannot cross accounts'
+  const foreignUser = randomUUID()
+  await pool.query(`insert into amountly_auth."user"(id,name,email,"emailVerified","createdAt","updatedAt",disabled)
+    values($1,'Other synthetic user',$2,true,now(),now(),false)`, [foreignUser, 'other-' + randomUUID() + '@example.invalid'])
+  await pool.query('update amountly_auth.mcp_grants set user_id=$1 where user_id=$2', [foreignUser, userId])
+  await rejectsRefresh('grant owned by another user')
+  await pool.query('update amountly_auth.mcp_grants set user_id=$1 where user_id=$2', [userId, foreignUser])
+  await pool.query('update amountly_auth.session set "userId"=$1 where "userId"=$2', [foreignUser, userId])
+  await rejectsRefresh('session owned by another user')
+  await pool.query('update amountly_auth.session set "userId"=$1 where "userId"=$2', [userId, foreignUser])
+  stage = 'website signout rejects refresh and fresh authorization recovers'
+  assert.equal((await request('/api/auth/sign-out', {}, { Origin: base, Cookie: cookie })).status, 200)
+  cookie = ''
+  await rejectsRefresh('signed-out session')
+  const reconnect = await authorize(client.client_id)
+  const reconnected = await tokenRequest({ client_id: client.client_id, grant_type: 'authorization_code', code: reconnect.code,
+    code_verifier: reconnect.verifier, redirect_uri: callback, resource })
+  assert.equal(reconnected.status, 200)
+  Object.assign(rotated, await reconnected.json())
+  assert.equal((await tools(rotated.access_token)).status, 200)
+  const freshRefresh = await refresh()
+  assert.equal(freshRefresh.status, 200)
+  Object.assign(rotated, await freshRefresh.json())
+  assert.equal((await tools(rotated.access_token)).status, 200)
+  console.log('PASS: expired/revoked grants, expired/signed-out sessions and disabled accounts reject refresh without issuing tokens; fresh reconnect recovers')
   stage = 'owner disconnect including a refresh-only client'
   const orphanRegistration = await request('/api/auth/oauth2/register', { client_name: 'Local refresh-only client', redirect_uris: [callback],
     token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' })
@@ -225,6 +330,30 @@ try {
   assert.equal((await tools(nativeTokens.access_token)).status, 200)
   assert.equal((await fetch(base + '/api/auth/oauth2/revoke', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: native.client_id, token: nativeTokens.refresh_token }) })).status, 200)
+  stage = 'simultaneous refresh replay cannot leave two usable token families'
+  const concurrent = await authorizeWithSession(client.client_id)
+  const refreshConcurrent = () => tokenRequest({ client_id: client.client_id, grant_type: 'refresh_token', refresh_token: concurrent.refresh_token, resource })
+  const racedRefreshes = await Promise.all([refreshConcurrent(), refreshConcurrent()])
+  assert.deepEqual(racedRefreshes.map(response => response.status).sort(), [200, 400])
+  for (const response of racedRefreshes) if (response.status === 200) {
+    const issued = await response.json()
+    assert.equal((await tools(issued.access_token)).status, 401, 'replay revokes any raced issuance')
+  }
+  stage = 'refresh racing owner disconnect cannot restore access'
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const family = await authorizeWithSession(client.client_id)
+    const [refreshing, disconnecting] = await Promise.all([
+      tokenRequest({ client_id: client.client_id, grant_type: 'refresh_token', refresh_token: family.refresh_token, resource }),
+      request('/api/chatgpt/disconnect', {}, { Cookie: cookie, Origin: base }),
+    ])
+    assert.equal(disconnecting.status, 200)
+    assert.ok([200, 400, 401].includes(refreshing.status))
+    const issued = refreshing.status === 200 ? await refreshing.json() : family
+    assert.equal((await tools(issued.access_token)).status, 401, 'revoked grant blocks a raced access token')
+    const retried = await tokenRequest({ client_id: client.client_id, grant_type: 'refresh_token', refresh_token: issued.refresh_token, resource })
+    assert.ok([400, 401].includes(retried.status), 'disconnect blocks subsequent refresh')
+  }
+  console.log('PASS: near-cutoff grants, unverified/banned/inactive accounts, cross-owner grant/session rejection, concurrent refresh replay, and refresh/disconnect races')
   if (process.argv.includes('--codex')) {
     stage = 'installed Codex automatic DCR login'
     await codexLogin()

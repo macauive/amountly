@@ -13,7 +13,7 @@ const metadata = { client_name: 'ChatGPT', redirect_uris: [callback], token_endp
   grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' }
 
 async function harness(enabled = true) {
-  const store = {}, grants = [], counters = new Map()
+  const store = {}, grants = [], counters = new Map(), agedGrants = new Set()
   let auth, provider, active = true
   class BoundaryError extends Error { constructor(status, message) { super(message); this.status = status } }
   const query = async (sql, values) => {
@@ -28,6 +28,11 @@ async function harness(enabled = true) {
       const grant = grants.find(row => row[0] === values[0])
       return { rows: verification && grant ? [{ value: verification.value, user_id: grant[1] }] : [] }
     }
+    if (sql.includes('as "grantActive"') && sql.includes('"oauthRefreshToken"')) {
+      const token = store.oauthRefreshToken.find(row => row.token === values[0] && row.clientId === values[1] && !row.revoked && row.expiresAt > new Date())
+      return { rows: token ? [{ grantActive: grants.some(g => g[0] === token.authorizationCodeId && g[1] === token.userId) && !agedGrants.has(token.authorizationCodeId),
+        sessionActive: store.session.some(row => row.id === token.sessionId && row.userId === token.userId && row.expiresAt > new Date()), accountActive: active }] : [] }
+    }
     if (sql.includes('select t."userId"')) {
       const table = sql.includes('"oauthRefreshToken"') ? 'oauthRefreshToken' : 'oauthAccessToken'
       return { rows: store[table].filter(row => row.token === values[0] && row.clientId === values[1] && !row.revoked)
@@ -35,10 +40,10 @@ async function harness(enabled = true) {
     }
     if (sql.includes('select a."clientId"')) return { rows: store.oauthAccessToken
       .filter(row => row.token === values[0] && grants.some(grant => grant[0] === row.authorizationCodeId))
-      .map(row => ({ clientId: row.clientId })) }
+      .map(row => ({ clientId: row.clientId, grantActive: !agedGrants.has(row.authorizationCodeId) })) }
     if (sql.includes('select u.id')) return { rows: store.user.filter(row => row.id === values[0] && row.emailVerified
       && (!values[1] || store.session.some(session => session.id === values[1])))
-      .map(row => ({ ...row, is_active: active })) }
+      .map(row => ({ ...row, is_active: active, sessionActive: store.session.some(session => session.id === values[1] && session.expiresAt > new Date()) })) }
     if (sql.includes('mcp_audit')) return { rows: [] }
     throw new Error('Unexpected local database operation')
   }
@@ -123,7 +128,7 @@ async function harness(enabled = true) {
         params: name === 'tools/list' ? {} : { name, arguments: args } }) }))
     return { response, value: await response.json() }
   }
-  return { load, auth, provider, store, counters, call, register, authorize, exchange, tool, userId: signup.user.id,
+  return { load, auth, provider, store, grants, agedGrants, counters, call, register, authorize, exchange, tool, userId: signup.user.id,
     disable: () => { active = false } }
 }
 
@@ -367,4 +372,33 @@ test('disconnect revokes all and only the signed-in owner capabilities, includin
   assert.equal(response.status, 200)
   assert.equal(released, true)
   for (const table of Object.values(rows)) for (const row of table) assert.equal(!!row.revoked, row.userId === owner)
+})
+
+
+test('expired grants stop refresh without rotating tokens; fresh authorization recovers', async () => {
+  const h = await harness(), clientId = await h.register(), grant = await h.authorize(clientId)
+  const tokens = await (await h.exchange(grant)).json()
+  h.agedGrants.add(createHash('sha256').update(grant.code).digest('hex'))
+  const count = h.store.oauthRefreshToken.length
+  const response = await h.call('token', { client_id: clientId, grant_type: 'refresh_token', refresh_token: tokens.refresh_token, resource })
+  assert.equal(response.status, 400)
+  assert.equal((await response.json()).error, 'invalid_grant')
+  assert.match(response.headers.get('X-Amountly-Request-Id'), /^[a-f0-9-]{36}$/)
+  assert.equal(h.store.oauthRefreshToken.length, count)
+  assert.equal((await h.tool(tokens.access_token)).response.status, 401)
+  const fresh = await h.authorize(clientId), replacement = await (await h.exchange(fresh)).json()
+  assert.equal((await h.tool(replacement.access_token)).response.status, 200)
+})
+
+test('expired browser sessions and inactive accounts cannot refresh; revocation remains available', async () => {
+  for (const fail of ['session', 'account']) {
+    const h = await harness(), clientId = await h.register(), grant = await h.authorize(clientId)
+    const tokens = await (await h.exchange(grant)).json()
+    if (fail === 'session') for (const session of h.store.session) session.expiresAt = new Date(0)
+    else h.disable()
+    const response = await h.call('token', { client_id: clientId, grant_type: 'refresh_token', refresh_token: tokens.refresh_token, resource })
+    assert.equal(response.status, 400)
+    assert.equal((await response.json()).error, 'invalid_grant')
+    assert.equal((await h.call('revoke', { client_id: clientId, token: tokens.refresh_token })).status, 200)
+  }
 })
