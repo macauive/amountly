@@ -50,8 +50,9 @@ function authorizeQuery(clientId: string, redirect = callback) {
     response_type: 'code', resource, scope: 'amountly:read offline_access', state: 'local-' + randomUUID(),
     code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url'), prompt: 'consent' }) }
 }
-async function authorize(clientId: string, redirect = callback) {
+async function authorize(clientId: string, redirect = callback, extensions: Record<string, string> = {}) {
   const grant = authorizeQuery(clientId, redirect)
+  for (const [key, value] of Object.entries(extensions)) grant.query.set(key, value)
   const first = await request('/api/auth/oauth2/authorize?' + grant.query, undefined, { Accept: 'application/json' })
   assert.equal(first.status, 200)
   const loginUrl = new URL((await first.json()).url, base)
@@ -354,6 +355,25 @@ try {
     assert.ok([400, 401].includes(retried.status), 'disconnect blocks subsequent refresh')
   }
   console.log('PASS: near-cutoff grants, unverified/banned/inactive accounts, cross-owner grant/session rejection, concurrent refresh replay, and refresh/disconnect races')
+  stage = 'documented per-connector callback and ignored extensions over HTTP'
+  const connectorCallback = 'https://chatgpt.com/connector/oauth/synthetic-http-review'
+  const connectorRegistration = await request('/api/auth/oauth2/register', { client_name: 'ChatGPT', redirect_uris: [connectorCallback],
+    token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' })
+  assert.equal(connectorRegistration.status, 201)
+  const connector = await connectorRegistration.json()
+  const connectorGrant = await authorize(connector.client_id, connectorCallback, { synthetic_extension: 'ignored', sig: 'untrusted', skipConsent: 'true' })
+  const connectorIssued = await tokenRequest({ client_id: connector.client_id, grant_type: 'authorization_code', code: connectorGrant.code,
+    code_verifier: connectorGrant.verifier, redirect_uri: connectorCallback, resource })
+  assert.equal(connectorIssued.status, 200)
+  assert.equal((await tools((await connectorIssued.json()).access_token)).status, 200)
+  const wrongPkce = authorizeQuery(connector.client_id, connectorCallback)
+  wrongPkce.query.set('code_challenge_method', 'plain')
+  wrongPkce.query.set('synthetic_extension', 'ignored')
+  const rejectedPkce = await request('/api/auth/oauth2/authorize?' + wrongPkce.query)
+  assert.equal(rejectedPkce.status, 400)
+  assert.equal((await rejectedPkce.json()).error, 'invalid_request')
+  assert.match(rejectedPkce.headers.get('X-Amountly-Request-Id') ?? '', /^[a-f0-9-]{36}$/)
+  console.log('PASS: per-connector callback with ignored extensions completes login, consent, token exchange and MCP; invalid PKCE still rejected')
   if (process.argv.includes('--codex')) {
     stage = 'installed Codex automatic DCR login'
     await codexLogin()

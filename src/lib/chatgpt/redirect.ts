@@ -27,7 +27,7 @@ export function allowedCallback(value: string) {
   try {
     const url = new URL(value)
     if (url.username || url.password || value.includes('?') || value.includes('#')) return false
-    if (url.origin === 'https://chatgpt.com') return /^\/connector_platform_oauth_redirect(?:\/[A-Za-z0-9_-]{1,128})?$/.test(url.pathname)
+    if (url.origin === 'https://chatgpt.com') return /^\/(?:connector_platform_oauth_redirect(?:\/[A-Za-z0-9_-]{1,128})?|connector\/oauth\/[A-Za-z0-9_-]{1,128})$/.test(url.pathname)
     // Raw matching excludes URL-normalized numeric IP aliases and dot segments.
     const loopback = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::([0-9]{1,5}))?\/callback(?:\/[A-Za-z0-9_-]{1,128})?$/.exec(value)
     return !!loopback && (!loopback[1] || (Number(loopback[1]) > 0 && Number(loopback[1]) <= 65535))

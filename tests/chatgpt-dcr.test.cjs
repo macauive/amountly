@@ -402,3 +402,37 @@ test('expired browser sessions and inactive accounts cannot refresh; revocation 
     assert.equal((await h.call('revoke', { client_id: clientId, token: tokens.refresh_token })).status, 200)
   }
 })
+
+test('authorization ignores unsupported extensions before signing the consent request', async () => {
+  const h = await harness(), id = await h.register()
+  const grant = await h.authorize(id, { synthetic_extension: 'ignored', request_uri: 'https://example.invalid/request',
+    sig: 'untrusted', ba_param: 'skipConsent', exp: '0', requirePKCE: 'false', skipConsent: 'true' })
+  assert.equal(grant.response.status, 302)
+  const signed = new URL(grant.response.headers.get('location'), origin).searchParams
+  for (const key of ['synthetic_extension', 'request_uri', 'requirePKCE', 'skipConsent']) assert.equal(signed.has(key), false)
+  assert.notEqual(signed.get('sig'), 'untrusted')
+  assert.notEqual(signed.get('exp'), '0')
+  assert.equal(signed.getAll('ba_param').includes('skipConsent'), false)
+  const tampered = new URLSearchParams(signed); tampered.set('state', 'tampered')
+  await assert.rejects(h.load('src/lib/chatgpt/query.ts').validateSignedQuery(tampered.toString()), error => error.reason === 'authorize_signature_invalid')
+  const rejectedConsent = await h.call('consent', { accept: true, oauth_query: tampered.toString() })
+  assert.equal(rejectedConsent.status, 400)
+  assert.equal((await rejectedConsent.json()).error, 'invalid_request')
+  assert.equal((await h.exchange(grant)).status, 200)
+  const invalid = await h.authorize(id, { synthetic_extension: 'ignored', code_challenge_method: 'plain' })
+  assert.equal(invalid.response.status, 400)
+  assert.equal((await invalid.response.json()).error, 'invalid_request')
+})
+
+test('documented per-connector ChatGPT callback completes OAuth and remains registered-client bound', async () => {
+  const h = await harness(), uri = 'https://chatgpt.com/connector/oauth/synthetic-review-id'
+  const id = await h.register({ ...metadata, redirect_uris: [uri] })
+  const wrong = await h.authorize(id, { redirect_uri: uri + '-other' })
+  assert.ok(wrong.rejected || [400, 401].includes(wrong.response.status))
+  const grant = await h.authorize(id, { redirect_uri: uri })
+  const issued = await h.exchange(grant)
+  assert.equal(issued.status, 200)
+  const tokens = await issued.json(), listed = await h.tool(tokens.access_token)
+  assert.equal(listed.response.status, 200)
+  assert.equal(listed.value.result.tools.length, 5)
+})

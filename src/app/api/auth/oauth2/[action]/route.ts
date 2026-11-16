@@ -6,7 +6,7 @@ import { AiHttpError } from '@/lib/ai/server'
 import { z } from 'zod/v3'
 import { chatgptEnabled, dcrEnabled, allowedOAuthClientId, allowedClientCallback, mcpResource } from '@/lib/chatgpt/config'
 import { validateRegistration } from '@/lib/chatgpt/registration'
-import { validateAuthorization, validateSignedQuery } from '@/lib/chatgpt/query'
+import { normalizeAuthorization, validateSignedQuery } from '@/lib/chatgpt/query'
 import { privateHeaders, rateLimit } from '@/lib/chatgpt/auth'
 import { admitIntegrationRequest } from '@/lib/chatgpt/admission'
 import { oauthRateOwner } from '@/lib/chatgpt/rate-owner'
@@ -15,7 +15,6 @@ import { ConnectionError, diagnoseConnection, type ConnectionRoute } from '@/lib
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-const authorizeKeys = new Set(['client_id','redirect_uri','response_type','scope','state','code_challenge','code_challenge_method','resource','prompt','login_hint'])
 const formKeys = new Set(['grant_type','client_id','code','code_verifier','redirect_uri','resource','refresh_token','scope','token','token_type_hint'])
 async function form(request: Request) {
   if (request.headers.get('content-type')?.split(';')[0] !== 'application/x-www-form-urlencoded') throw new AiHttpError(415, 'Expected form data')
@@ -55,8 +54,7 @@ async function handle(request: Request, context: { params: Promise<{ action: str
       await rateLimit('oauth:register', 10)
       body = JSON.stringify(validateRegistration(await readBoundedJson(request, 4096)))
     } else if (action === 'authorize' && request.method === 'GET') {
-      for (const key of url.searchParams.keys()) if (!authorizeKeys.has(key)) throw new AiHttpError(400, 'Invalid authorization request')
-      validateAuthorization(url.searchParams)
+      url.search = normalizeAuthorization(url.searchParams).toString()
     } else if (action === 'consent' && request.method === 'POST') {
       validateOrigin(request.headers, true)
       const identity = await requireIdentity(request.headers)
@@ -84,7 +82,7 @@ async function handle(request: Request, context: { params: Promise<{ action: str
         if (action === 'token') await requireRefreshConnection(new URLSearchParams(body))
       }
       // Quotas run before the provider consumes a code or rotates a refresh.
-      return getAuth().handler(new Request(request.url, { method: request.method, headers: request.headers, body }))
+      return getAuth().handler(new Request(url, { method: request.method, headers: request.headers, body }))
     })
     const headers = new Headers(response.headers)
     for (const [key, value] of Object.entries(privateHeaders)) headers.set(key, value)
