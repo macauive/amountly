@@ -72,7 +72,7 @@ test('bundled receipt validator launches the traced raw worker with unchanged ty
   const validate = await validator
   const pdf = textReceiptPdf()
   assert.equal(pdf.length, 853)
-  const result = await validate(pdf, 'application/pdf')
+  const result = await validate(pdf, 'application/pdf', 'synthetic-owner')
   assert.equal(result.mime, 'application/pdf')
   assert.deepEqual(result.data, pdf)
   assert.equal(launches.length, 1)
@@ -88,9 +88,10 @@ test('bundled receipt validator launches the traced raw worker with unchanged ty
 test('bundled PDF processing keeps concurrency limits and releases slots after parser failure', async () => {
   const validate = await validator
   const pdf = textReceiptPdf()
-  const pending = [validate(pdf, 'application/pdf'), validate(pdf, 'application/pdf')]
-  await assert.rejects(validate(pdf, 'application/pdf'), error => error.status === 429)
+  const pending = [validate(pdf, 'application/pdf', 'synthetic-owner'), validate(pdf, 'application/pdf', 'other-owner')]
+  await assert.rejects(validate(pdf, 'application/pdf', 'synthetic-owner'), error => error.status === 429)
+  await assert.rejects(validate(pdf, 'application/pdf', 'third-owner'), error => error.status === 429)
   await Promise.all(pending)
-  await assert.rejects(validate(Buffer.from('%PDF-1.7\nSynthetic malformed PDF\n%%EOF\n'), 'application/pdf'), error => error.status === 400)
-  assert.equal((await validate(pdf, 'application/pdf')).mime, 'application/pdf')
+  await assert.rejects(validate(Buffer.from('%PDF-1.7\nSynthetic malformed PDF\n%%EOF\n'), 'application/pdf', 'synthetic-owner'), error => error.status === 400)
+  assert.equal((await validate(pdf, 'application/pdf', 'synthetic-owner')).mime, 'application/pdf')
 })

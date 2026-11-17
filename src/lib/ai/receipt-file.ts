@@ -55,7 +55,7 @@ async function validatePdf(bytes: Buffer) {
 
 // Server-only boundary: decode and verify content before sending any file to AI.
 // The returned image is a metadata-free, bounded derivative; PDFs stay original.
-export async function validateReceiptFile(bytes: Buffer, declaredMime: string, userId: string): Promise<{ data: Buffer; mime: string }> {
+export async function validateReceiptFile(bytes: Buffer, declaredMime: string, userId: string, beforeDecode?: () => Promise<void>): Promise<{ data: Buffer; mime: string }> {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
     throw new AiHttpError(400, 'Choose a nonempty receipt file.')
   }
@@ -65,8 +65,9 @@ export async function validateReceiptFile(bytes: Buffer, declaredMime: string, u
     throw new AiHttpError(415, 'Choose a JPEG, PNG, WebP, or PDF receipt.')
   }
   const release = acquireDecoder(userId)
-  if (!release) throw new AiHttpError(429, 'Receipt processing is busy. Try again shortly.')
+  if (!release) throw new AiHttpError(429, 'Receipt processing is busy. Try again shortly.', 3)
   try {
+    await beforeDecode?.()
     if (mime === 'application/pdf') {
       await validatePdf(bytes)
       return { data: bytes, mime }

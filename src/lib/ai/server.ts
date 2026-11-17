@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 
 export class AiHttpError extends Error {
-  constructor(public readonly status: number, message: string) {
+  constructor(public readonly status: number, message: string, public readonly retryAfter?: number) {
     super(message)
   }
 }

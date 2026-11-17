@@ -74,7 +74,12 @@ function harness(t, options = {}) {
   const overrides = {
     'next/server': { NextResponse: { json: (value, init) => Response.json(value, init) } },
     '@supabase/supabase-js': { createClient: () => db },
-    '@/lib/ai/receipt-file': { validateReceiptFile: async (bytes, mime) => {
+    '@/lib/ai/receipt-file': { validateReceiptFile: async (bytes, mime, _user, beforeDecode) => {
+      if (options.decoderBusy) {
+        const { AiHttpError } = load('src/lib/ai/server.ts')
+        throw new AiHttpError(429, 'Receipt processing is busy. Try again shortly.', 3)
+      }
+      await beforeDecode()
       calls.validation++
       assert.ok(Buffer.isBuffer(bytes))
       if (options.validationHandler) return options.validationHandler(bytes, mime)
@@ -226,6 +231,13 @@ test('durable receipt quota denies exhaustion, uncertain results and database fa
     assert.equal(h.calls.validation, 0)
     h.restore()
   }
+})
+
+test('decoder admission denial does not spend AI quota', async t => {
+  const h = harness(t, { decoderBusy: true })
+  const response = await denied(h, request(), 429)
+  assert.equal(response.headers.get('Retry-After'), '3')
+  assert.equal(h.calls.validation, 0)
 })
 
 test('all accepted image MIME types send normalized image data with strict, bounded, non-stored Responses requests', async t => {

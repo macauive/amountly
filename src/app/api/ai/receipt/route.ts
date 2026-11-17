@@ -24,17 +24,18 @@ export async function POST(request: Request) {
       throw new AiHttpError(415, 'Choose a JPEG, PNG, WebP, or PDF receipt')
     }
     release = acquireExtraction(userId)
-    if (!release) throw new AiHttpError(429, 'Receipt extraction is busy. Try again shortly.')
+    if (!release) throw new AiHttpError(429, 'Receipt extraction is busy. Try again shortly.', 3)
     const bytes = Buffer.from(await readBoundedBytes(request, maxReceiptFileBytes))
     if (request.signal.aborted) throw new AiHttpError(408, 'Receipt extraction cancelled.')
     const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) throw new AiHttpError(503, 'AI is temporarily unavailable')
-    const { data: allowed, error } = await client.rpc('consume_ai_quota')
-    if (error) throw new AiHttpError(503, 'AI is temporarily unavailable')
-    if (allowed !== true) throw new AiHttpError(429, 'AI usage limit reached. Please try again later.')
-    if (request.signal.aborted) throw new AiHttpError(408, 'Receipt extraction cancelled.')
-
-    const file = await validateReceiptFile(bytes, mime, userId)
+    const file = await validateReceiptFile(bytes, mime, userId, async () => {
+      if (request.signal.aborted) throw new AiHttpError(408, 'Receipt extraction cancelled.')
+      const { data: allowed, error } = await client.rpc('consume_ai_quota')
+      if (error) throw new AiHttpError(503, 'AI is temporarily unavailable')
+      if (allowed !== true) throw new AiHttpError(429, 'AI usage limit reached. Please try again later.')
+      if (request.signal.aborted) throw new AiHttpError(408, 'Receipt extraction cancelled.')
+    })
     if (request.signal.aborted) throw new AiHttpError(408, 'Receipt extraction cancelled.')
 
     const fileData = `data:${file.mime};base64,${file.data.toString('base64')}`
@@ -82,7 +83,9 @@ export async function POST(request: Request) {
   } catch (error) {
     const status = error instanceof AiHttpError ? error.status : 502
     const message = error instanceof AiHttpError ? error.message : 'Could not read this receipt. Try another file or enter the details manually.'
-    return Response.json({ error: message }, { status, headers })
+    const retryAfter = error instanceof AiHttpError ? error.retryAfter : undefined
+    return Response.json({ error: message }, { status,
+      headers: retryAfter ? { ...headers, 'Retry-After': String(retryAfter) } : headers })
   } finally {
     release?.()
   }
