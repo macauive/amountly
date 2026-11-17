@@ -11,6 +11,7 @@ import { clearSignupProof, signupProofCookie, signupProofUser } from '@/lib/plat
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+const resetRequest = 'email-otp/request-password-reset'
 const posts = new Set(['sign-in/email', 'sign-up/email', 'sign-out', 'change-password',
   'email-otp/send-verification-otp', 'email-otp/verify-email', 'email-otp/request-password-reset', 'email-otp/reset-password'])
 const email = z.string().trim().email().max(254).toLowerCase()
@@ -32,6 +33,8 @@ async function handle(request: Request, context: { params: Promise<{ all: string
   const invalidOtp = () => Response.json({ code: 'INVALID_OTP',
     error: 'This code could not be verified. Check the code or reset your password.' }, { status: 400, headers })
   let path = ''
+  let resetStarted: number | undefined
+  const resetResponse = () => Response.json({ success: true }, { headers })
   let signupEmail: string | undefined
   try {
     path = (await context.params).all.join('/')
@@ -48,6 +51,7 @@ async function handle(request: Request, context: { params: Promise<{ all: string
         if (!chatgptEnabled()) throw new AiHttpError(400, 'Invalid authentication input')
         await validateSignedQuery(parsed.data.oauth_query)
       }
+      if (path === resetRequest) resetStarted = Date.now()
       if (path === 'sign-up/email') signupEmail = parsed.data.email
       if (path === 'email-otp/verify-email' || path === 'email-otp/send-verification-otp') {
         const pendingUser = await signupProofUser(request.headers, parsed.data.email)
@@ -63,6 +67,10 @@ async function handle(request: Request, context: { params: Promise<{ all: string
       body = JSON.stringify(parsed.data)
     }
     const response = await getAuth().handler(new Request(request.url, { method: request.method, headers: request.headers, body }))
+    if (path === resetRequest) {
+      if (!response.ok && response.status !== 429) console.error('Password reset request failed')
+      return resetResponse()
+    }
     if (path === 'sign-in/email' && body && JSON.parse(body).oauth_query && response.ok) await recordIssuedGrant(request,response)
     const result = await response.json()
     // Browser authentication is cookie-only; never return a reusable session token.
@@ -93,11 +101,21 @@ async function handle(request: Request, context: { params: Promise<{ all: string
     if (!response.ok) return Response.json({ error: 'Authentication could not be completed. Check your details and try again.', code: result?.code }, { status: response.status, headers: safeHeaders })
     return Response.json(result, { status: response.status, headers: safeHeaders })
   } catch (error) {
+    if (resetStarted !== undefined) {
+      console.error('Password reset request failed')
+      return resetResponse()
+    }
     if (path === 'email-otp/verify-email' && !(error instanceof AiHttpError)) {
       console.error('Email verification request failed')
       return invalidOtp()
     }
     return Response.json({ error: 'Authentication is temporarily unavailable.' }, { status: error instanceof AiHttpError ? error.status : 503, headers })
+  } finally {
+    if (resetStarted !== undefined) {
+      // Smooth the remaining account-lookup and short database-write variance.
+      const remaining = 250 - (Date.now() - resetStarted)
+      if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining))
+    }
   }
 }
 export const GET = handle

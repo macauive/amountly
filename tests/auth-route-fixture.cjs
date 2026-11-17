@@ -27,6 +27,7 @@ module.exports = function authRouteFixture(options = {}) {
     } },
     'next/server': { after: fn => pending.push(fn) },
     pg: { Pool },
+    '@/lib/platform/otp-limits': { reserveOtp: options.reserveOtp ?? (async () => true) },
     nodemailer: { createTransport(config) {
       assert.equal(config.host, 'smtp.resend.com')
       assert.equal(config.auth.user, 'resend')

@@ -2,15 +2,17 @@ import { betterAuth } from 'better-auth'
 import { emailOTP } from 'better-auth/plugins'
 import { hashPassword, verifyPassword } from 'better-auth/crypto'
 import { compare } from 'bcryptjs'
+import { after } from 'next/server'
 import { Pool } from 'pg'
 import { sendAuthCode } from '@/lib/platform/auth-email'
 import { appOrigin, requiredSecret } from '@/lib/platform/config'
 import { oauthProvider, getOAuthProviderApi } from '@better-auth/oauth-provider'
-import { APIError, createAuthEndpoint } from 'better-auth/api'
+import { APIError, createAuthEndpoint, createAuthMiddleware } from 'better-auth/api'
 import { z } from 'zod'
 import { chatgptEnabled } from '@/lib/chatgpt/config'
 import { oauthOptions } from '@/lib/chatgpt/oauth'
 import { oauthRateRules } from '@/lib/chatgpt/admission'
+import { reserveOtp } from '@/lib/platform/otp-limits'
 import { signupProofUser } from '@/lib/platform/signup-proof'
 
 let instance: ReturnType<typeof buildAuth> | undefined
@@ -56,6 +58,12 @@ function buildAuth() {
         disabled: { type: 'boolean', required: false, defaultValue: false, input: false } } },
     rateLimit: { enabled: true, storage: 'database', window: 60, max: 60,
       customRules: { '/sign-in/email': { window: 60, max: 5 }, '/sign-up/email': { window: 60, max: 3 }, ...oauthRateRules } },
+    hooks: { before: createAuthMiddleware(async ctx => {
+      if (ctx.path !== '/email-otp/request-password-reset') return
+      if (!await reserveOtp(authPool(), ctx.body.email, 'reset-send')) {
+        throw APIError.from('TOO_MANY_REQUESTS', { code: 'OTP_THROTTLED', message: 'Try again later.' })
+      }
+    }) },
     databaseHooks: { session: { create: { before: async session => {
       const result = await authPool().query('select disabled, "bannedUntil" from amountly_auth."user" where id=$1', [session.userId])
       const user = result.rows[0]
@@ -64,7 +72,14 @@ function buildAuth() {
       if (profile.rows[0]?.is_active === false) return false
       return { data: session }
     } } } },
-    plugins: [emailOTP({ sendVerificationOTP: ({ email, otp, type }) => sendAuthCode(email, otp, type),
+    plugins: [emailOTP({ sendVerificationOTP: async ({ email, otp, type }) => {
+      if (type !== 'forget-password') return sendAuthCode(email, otp, type)
+      // Code persistence stays in the auth request. SMTP starts after the response.
+      after(async () => {
+        try { await sendAuthCode(email, otp, type) }
+        catch { console.error('Password reset email delivery failed') }
+      })
+    },
       sendVerificationOnSignUp: true, overrideDefaultEmailVerification: true,
       disableSignUp: true, storeOTP: 'hashed', otpLength: 6, expiresIn: 600, allowedAttempts: 3 }),
       ...(provider ? [provider, { id: 'amountly-protected-resource', endpoints: {

@@ -101,7 +101,7 @@ test('verification UI accepts the active backend code length and submits the rec
 })
 
 test('real auth routes verify signup and reset passwords with hashed single-use codes through Resend', async () => {
-  const { call, browser, messages, lastCode, store } = require('./auth-route-fixture.cjs')()
+  const { call, browser, messages, lastCode, store, flush } = require('./auth-route-fixture.cjs')()
   const { randomBytes } = require('node:crypto')
   const email = 'auth-flow@example.invalid'
   const password = randomBytes(24).toString('hex'), replacement = randomBytes(24).toString('hex')
@@ -122,6 +122,7 @@ test('real auth routes verify signup and reset passwords with hashed single-use 
   assert.equal((await verified.json()).token, undefined, 'browser never receives a session token')
   assert.equal((await (await call('get-session')).json()).user.emailVerified, true)
   assert.equal((await call('email-otp/request-password-reset', { email })).status, 200)
+  await flush()
   assert.equal(messages.at(-1).subject, 'Reset your Amountly password')
   const resetCode = lastCode()
   assert.ok(store.verification.every(row => !row.value.includes(resetCode)))
