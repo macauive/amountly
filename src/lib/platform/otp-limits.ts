@@ -33,7 +33,7 @@ export async function reserveOtp(pool: Pool, email: string, operation: keyof typ
       expires_at = case when bucket.expires_at <= statement_timestamp() then excluded.expires_at else bucket.expires_at end,
       next_at = excluded.next_at
     where bucket.expires_at <= statement_timestamp()
-      or (bucket.used < $5 and bucket.next_at <= statement_timestamp())
+      or (bucket.used < $5 and ($4::integer = 0 or bucket.next_at <= statement_timestamp()))
     returning 1
   `, [key, operation, windowSeconds, cooldown, max])
   return result.rowCount === 1
