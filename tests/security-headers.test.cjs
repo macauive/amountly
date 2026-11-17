@@ -36,3 +36,18 @@ test('HTTPS sessions use a host-only Secure cookie for sign-in, refresh and sign
   assert.equal(await (await call('get-session')).json(), null)
   sessionCookie(await call('sign-in/email', { email, password }))
 })
+
+
+test('the apex sends HSTS, with explicit opt-in for HTTPS-only subdomains', async () => {
+  const loadApp = require('./load-app.cjs')
+  for (const [setting, expected] of [[undefined, 'max-age=31536000'], ['true', 'max-age=31536000; includeSubDomains']]) {
+    const config = loadApp({}, { AMOUNTLY_HSTS_INCLUDE_SUBDOMAINS: setting })('next.config.js')
+    const headers = await config.headers()
+    const matching = headers.filter(rule => rule.headers.some(header => header.key === 'Strict-Transport-Security'))
+    assert.equal(matching.length, 1)
+    assert.equal(matching[0].source, '/:path*')
+    assert.equal(matching[0].has[0].type, 'host')
+    assert.equal(matching[0].has[0].value, 'amountly.app')
+    assert.equal(matching[0].headers[0].value, expected)
+  }
+})
