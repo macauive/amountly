@@ -620,7 +620,7 @@ export default function InvoicesPage() {
                     <p className="text-xs text-muted-foreground">Optional on create — the server can assign the invoice number.</p>
                   )}
                 </div>
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label htmlFor="client">Client</Label>
                   <Select
                     value={formData.client_id}

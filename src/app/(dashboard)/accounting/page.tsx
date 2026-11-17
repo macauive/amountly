@@ -972,7 +972,7 @@ function AccountingWorkspace() {
                     required
                   />
                 </div>
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label htmlFor="category">Category *</Label>
                   <Select
                     value={accountForm.category}

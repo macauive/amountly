@@ -14,6 +14,10 @@ export async function GET(request: Request) {
   delete metadata.introspection_endpoint
   delete metadata.introspection_endpoint_auth_methods_supported
   delete metadata.introspection_endpoint_auth_signing_alg_values_supported
-  return Response.json({ ...metadata, token_endpoint_auth_methods_supported: ['none','private_key_jwt'],
-    revocation_endpoint_auth_methods_supported: ['none','private_key_jwt'], userinfo_endpoint: `${appOrigin()}/oauth/userinfo` }, { headers: privateHeaders })
+  delete metadata.client_id_metadata_document_supported
+  delete metadata.token_endpoint_auth_signing_alg_values_supported
+  delete metadata.revocation_endpoint_auth_signing_alg_values_supported
+  const methods = ['none']
+  return Response.json({ ...metadata, token_endpoint_auth_methods_supported: methods,
+    revocation_endpoint_auth_methods_supported: methods, userinfo_endpoint: `${appOrigin()}/oauth/userinfo` }, { headers: privateHeaders })
 }

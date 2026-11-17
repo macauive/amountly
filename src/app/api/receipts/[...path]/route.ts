@@ -1,14 +1,21 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { Pool } from 'pg'
+import { z } from 'zod/v3'
 import { requireIdentity, validateOrigin } from '@/lib/platform/server'
 import { requiredSecret, usesRenderBackend } from '@/lib/platform/config'
 import { AiHttpError } from '@/lib/ai/server'
+import { maxReceiptFileBytes } from '@/lib/ai/receipt-contract'
+import { readBoundedBytes } from '@/lib/http'
+import { limitInFlight } from '@/lib/in-flight'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 let pool: Pool | undefined
+const acquireUpload = limitInFlight(2, 4)
 const headers = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" }
 const types: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' }
+const captureSchema = z.object({ id: z.string().uuid(), revision: z.string().regex(/^[1-9][0-9]{0,9}$/).refine(value => Number(value) <= 2147483647) })
 function matches(bytes: Buffer, type: string) {
   if (type === 'application/pdf') return bytes.subarray(0, 5).toString() === '%PDF-'
   if (type === 'image/jpeg') return bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
@@ -17,6 +24,7 @@ function matches(bytes: Buffer, type: string) {
 }
 async function handle(request: Request, context: { params: Promise<{ path: string[] }> }) {
   if (!usesRenderBackend) return Response.json({ error: 'Not found' }, { status: 404, headers })
+  let release: (() => void) | null = null
   let connection
   try {
     validateOrigin(request.headers, request.method === 'PUT')
@@ -25,23 +33,14 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     const upload = request.method === 'PUT' && path === 'upload'
     if (!upload && (request.method !== 'GET' || !/^[0-9a-f-]{36}\/[0-9a-f-]{36}\.(jpg|png|webp|pdf)$/.test(path))) throw new AiHttpError(404, 'Not found')
     let bytes: Buffer | undefined
+    const capture = upload && (request.headers.has('x-capture-id') || request.headers.has('x-capture-revision'))
+      ? captureSchema.parse({ id: request.headers.get('x-capture-id'), revision: request.headers.get('x-capture-revision') }) : null
     const type = request.headers.get('content-type') ?? ''
     if (upload) {
       if (!types[type]) throw new AiHttpError(415, 'Unsupported receipt type')
-      const limit = 10 * 1024 * 1024
-      if (!request.body || Number(request.headers.get('content-length') ?? 0) > limit) throw new AiHttpError(413, 'Receipt too large')
-      const reader = request.body.getReader(), chunks: Uint8Array[] = []
-      let size = 0
-      try {
-        while (true) {
-          const { value, done } = await reader.read()
-          if (done) break
-          size += value.byteLength
-          if (size > limit) { await reader.cancel(); throw new AiHttpError(413, 'Receipt too large') }
-          chunks.push(value)
-        }
-      } finally { reader.releaseLock() }
-      bytes = Buffer.concat(chunks)
+      release = acquireUpload(identity.id)
+      if (!release) throw new AiHttpError(429, 'Receipt upload is busy. Try again shortly.')
+      bytes = Buffer.from(await readBoundedBytes(request, maxReceiptFileBytes))
       if (!matches(bytes, type)) throw new AiHttpError(415, 'Invalid receipt file')
     }
     pool ??= new Pool({ connectionString: requiredSecret('DATA_DATABASE_URL'), max: 2, connectionTimeoutMillis: 10000 })
@@ -50,8 +49,23 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     await connection.query('set local role authenticated')
     await connection.query("select set_config('request.jwt.claims', $1, true), set_config('statement_timeout', '10000', true)", [JSON.stringify({ sub: identity.id, email: identity.email, role: 'authenticated' })])
     if (upload) {
-      const objectPath = `${identity.id}/${randomUUID()}.${types[type]}`
-      await connection.query('insert into amountly_files.receipts (path, owner_id, content_type, contents) values ($1,$2,$3,$4)', [objectPath, identity.id, type, bytes])
+      const guard = await connection.query('select amountly_files.storage_budget_ready() as ready')
+      if (guard.rows[0]?.ready !== true) throw new AiHttpError(503, 'Receipt storage unavailable')
+      let objectPath = `${identity.id}/${randomUUID()}.${types[type]}`
+      let promoted = false
+      if (capture) {
+        await connection.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [identity.id])
+        const result = await connection.query('select revision,file_sha256,content_type,receipt_path from amountly_files.capture_drafts where id=$1 and owner_id=$2 for update', [capture.id, identity.id])
+        const row = result.rows[0]
+        if (!row || row.revision !== Number(capture.revision)) throw new AiHttpError(409, 'Capture changed')
+        // A replacement chosen after resuming is an ordinary new upload. Only
+        // the exact kept original can be moved/reused without allocating bytes.
+        if (row.content_type === type && row.file_sha256 === createHash('sha256').update(bytes!).digest('hex')) {
+          if (row.receipt_path) { objectPath = row.receipt_path; promoted = true }
+          else await connection.query('update amountly_files.capture_drafts set contents=null,receipt_path=$1 where id=$2 and owner_id=$3', [objectPath, capture.id, identity.id])
+        }
+      }
+      if (!promoted) await connection.query('insert into amountly_files.receipts (path, owner_id, content_type, contents) values ($1,$2,$3,$4)', [objectPath, identity.id, type, bytes])
       await connection.query('commit')
       return Response.json({ path: objectPath }, { status: 201, headers })
     }
@@ -62,8 +76,13 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
       'Content-Disposition': `attachment; filename="receipt.${path.split('.').pop()}"` } })
   } catch (error) {
     if (connection) await connection.query('rollback').catch(() => {})
-    return Response.json({ error: 'Could not access this receipt.' }, { status: error instanceof AiHttpError ? error.status : 503, headers })
-  } finally { connection?.release() }
+    const quota = typeof error === 'object' && error !== null && 'code' in error && error.code === 'PT413'
+    return Response.json({ error: quota ? 'Receipt storage is full. Contact support before uploading more files.' : 'Could not access this receipt.' },
+      { status: quota ? 413 : error instanceof AiHttpError ? error.status : error instanceof z.ZodError ? 400 : 503, headers })
+  } finally {
+    connection?.release()
+    release?.()
+  }
 }
 export const PUT = handle
 export const GET = handle

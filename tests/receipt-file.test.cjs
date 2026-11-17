@@ -10,16 +10,18 @@ const appLoader = require('./load-app.cjs')
 // Run the application's actual validator, preserving real decoders and workers.
 function loadValidator(overrides = {}) {
   const filename = path.resolve('src/lib/ai/receipt-file.ts')
-  const server = appLoader()('src/lib/ai/server.ts')
+  const load = appLoader()
+  const server = load('src/lib/ai/server.ts')
+  const limits = load('src/lib/in-flight.ts')
   const module = { exports: {} }
   vm.runInNewContext(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   }).outputText, {
     module, exports: module.exports,
-    require: name => name === './server' ? server : Object.hasOwn(overrides, name) ? overrides[name] : require(name),
+    require: name => name === './server' ? server : name === '@/lib/in-flight' ? limits : Object.hasOwn(overrides, name) ? overrides[name] : require(name),
     Buffer, process, setTimeout, clearTimeout,
   }, { filename })
-  return module.exports.validateReceiptFile
+  return (bytes, mime, user = 'synthetic-owner') => module.exports.validateReceiptFile(bytes, mime, user)
 }
 
 const validate = loadValidator()
@@ -144,8 +146,9 @@ test('receipt validator rejects spoofed, malformed, encrypted, and excessive-pag
 
 test('receipt processing bounds concurrent decoding and releases slots after failures', async () => {
   const input = await image()
-  const pending = [validate(input, 'image/png'), validate(input, 'image/png')]
+  const pending = [validate(input, 'image/png'), validate(input, 'image/png', 'other-owner')]
   await assert.rejects(validate(input, 'image/png'), status(429))
+  await assert.rejects(validate(input, 'image/png', 'third-owner'), status(429))
   await Promise.all(pending)
   await assert.rejects(validate(Buffer.from('broken'), 'image/png'), status(400))
   assert.equal((await validate(input, 'image/png')).mime, 'image/jpeg')

@@ -2,16 +2,19 @@ import { betterAuth } from 'better-auth'
 import { emailOTP } from 'better-auth/plugins'
 import { hashPassword, verifyPassword } from 'better-auth/crypto'
 import { compare } from 'bcryptjs'
+import { after } from 'next/server'
 import { Pool } from 'pg'
-import nodemailer from 'nodemailer'
+import { sendAuthCode } from '@/lib/platform/auth-email'
 import { appOrigin, requiredSecret } from '@/lib/platform/config'
 import { oauthProvider, getOAuthProviderApi } from '@better-auth/oauth-provider'
-import { createAuthEndpoint } from 'better-auth/api'
+import { APIError, createAuthEndpoint, createAuthMiddleware } from 'better-auth/api'
 import { z } from 'zod'
-import { cimd } from '@better-auth/cimd'
-import { fetchClientMetadataResource } from '@better-auth/cimd/node'
-import { allowedClientDocument, chatgptEnabled } from '@/lib/chatgpt/config'
+import { chatgptEnabled } from '@/lib/chatgpt/config'
 import { oauthOptions } from '@/lib/chatgpt/oauth'
+import { oauthRateRules } from '@/lib/chatgpt/admission'
+import { authCodeLength } from '@/lib/platform/otp-code'
+import { reserveOtp } from '@/lib/platform/otp-limits'
+import { signupProofUser } from '@/lib/platform/signup-proof'
 
 let instance: ReturnType<typeof buildAuth> | undefined
 let pool: Pool | undefined
@@ -21,43 +24,70 @@ export function authPool() {
     options: '-c search_path=amountly_auth,pg_catalog -c statement_timeout=10000' })
 }
 
-async function sendCode(email: string, otp: string, type: string) {
-  // Fixed Proton endpoint; callers cannot choose an SMTP destination or headers.
-  const sender = requiredSecret('SMTP_FROM')
-  if (!/^[^\s<>\r\n]+@[^\s<>\r\n]+$/.test(sender)) throw new Error('Invalid mail configuration')
-  const transport = nodemailer.createTransport({ host: 'smtp.protonmail.ch', port: 587,
-    secure: false, requireTLS: true, tls: { minVersion: 'TLSv1.2', rejectUnauthorized: true },
-    auth: { user: requiredSecret('SMTP_USERNAME'), pass: requiredSecret('SMTP_PASSWORD') },
-    connectionTimeout: 10000, socketTimeout: 15000, logger: false, debug: false })
-  try {
-    await transport.sendMail({ from: { name: 'Amountly', address: sender }, to: email,
-      subject: type === 'forget-password' ? 'Reset your Amountly password' : 'Verify your Amountly email',
-      text: `Your Amountly verification code is ${otp}. It expires in 10 minutes. If you did not request this, ignore this email.` })
-  } finally { transport.close() }
+const firstVerifications = new WeakSet<Request>()
+
+export function completedFirstEmailVerification(request: Request) {
+  return firstVerifications.has(request)
 }
 
 function buildAuth() {
   const secret = requiredSecret('BETTER_AUTH_SECRET')
   if (secret.length < 32) throw new Error('Invalid authentication configuration')
+  const origin = appOrigin()
+  const secure = origin.startsWith('https:')
   const provider = chatgptEnabled() ? oauthProvider(oauthOptions()) : null
   return betterAuth({
-    appName: 'Amountly', baseURL: appOrigin(), secret, database: authPool(),
-    trustedOrigins: [appOrigin()],
-    advanced: { database: { generateId: 'uuid' }, cookiePrefix: 'amountly',
-      useSecureCookies: appOrigin().startsWith('https:'),
-      defaultCookieAttributes: { httpOnly: true, sameSite: 'lax', path: '/' } },
+    appName: 'Amountly', baseURL: origin, secret, database: authPool(),
+    trustedOrigins: [origin],
+    advanced: {
+      database: { generateId: 'uuid' }, cookiePrefix: 'amountly',
+      // Better Auth prepends __Secure- even to explicit names when enabled.
+      useSecureCookies: false,
+      defaultCookieAttributes: { secure, httpOnly: true, sameSite: 'lax', path: '/' },
+      cookies: secure ? {
+        session_token: { name: '__Host-amountly.session_token' },
+        session_data: { name: '__Host-amountly.session_data' },
+        account_data: { name: '__Host-amountly.account_data' },
+        dont_remember: { name: '__Host-amountly.dont_remember' },
+      } : undefined,
+    },
     emailAndPassword: { enabled: true, requireEmailVerification: true,
       minPasswordLength: 12, maxPasswordLength: 128, revokeSessionsOnPasswordReset: true,
+      // Better Auth checks for an existing normalized email, then calls this
+      // instead of returning a successful signup with a synthetic user ID.
+      customSyntheticUser: () => { throw APIError.from('CONFLICT', {
+        code: 'ACCOUNT_EXISTS', message: 'An account already exists for this email.',
+      }) },
       password: { hash: hashPassword, verify: async ({ hash, password }) =>
         /^\$2[aby]\$/.test(hash) ? compare(password, hash) : verifyPassword({ hash, password }) } },
-    emailVerification: { autoSignInAfterVerification: true },
+    emailVerification: {
+      autoSignInAfterVerification: true,
+      beforeEmailVerification: async (user, request) => {
+        const proofUser = request && await signupProofUser(request.headers, user.email)
+        if (!request || user.emailVerified || proofUser !== user.id) {
+          throw APIError.from('BAD_REQUEST', { code: 'INVALID_OTP', message: 'Invalid verification code.' })
+        }
+        firstVerifications.add(request)
+      },
+    },
     session: { expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24, freshAge: 60 * 10,
       cookieCache: { enabled: false } },
     user: { deleteUser: { enabled: false }, changeEmail: { enabled: false },
       additionalFields: { bannedUntil: { type: 'date', required: false, input: false },
         disabled: { type: 'boolean', required: false, defaultValue: false, input: false } } },
     rateLimit: { enabled: true, storage: 'database', window: 60, max: 60,
-      customRules: { '/sign-in/email': { window: 60, max: 5 }, '/sign-up/email': { window: 60, max: 3 } } },
+      customRules: { '/sign-in/email': { window: 60, max: 5 }, '/sign-up/email': { window: 60, max: 3 }, ...oauthRateRules } },
+    hooks: { before: createAuthMiddleware(async ctx => {
+      const path = ctx.path
+      const operation = path === '/email-otp/request-password-reset' ? 'reset-send'
+        : path === '/email-otp/send-verification-otp' ? 'signup-send'
+        : path === '/email-otp/verify-email' ? 'signup-verify'
+        : path === '/email-otp/reset-password' ? 'reset-verify'
+        : null
+      if (operation && !await reserveOtp(authPool(), ctx.body.email, operation)) {
+        throw APIError.from('TOO_MANY_REQUESTS', { code: 'OTP_THROTTLED', message: 'Try again later.' })
+      }
+    }) },
     databaseHooks: { session: { create: { before: async session => {
       const result = await authPool().query('select disabled, "bannedUntil" from amountly_auth."user" where id=$1', [session.userId])
       const user = result.rows[0]
@@ -66,20 +96,23 @@ function buildAuth() {
       if (profile.rows[0]?.is_active === false) return false
       return { data: session }
     } } } },
-    plugins: [emailOTP({ sendVerificationOTP: ({ email, otp, type }) => sendCode(email, otp, type),
+    plugins: [emailOTP({ sendVerificationOTP: async ({ email, otp, type }) => {
+      if (type !== 'forget-password') return sendAuthCode(email, otp, type)
+      // Code persistence stays in the auth request. SMTP starts after the response.
+      after(async () => {
+        try { await sendAuthCode(email, otp, type) }
+        catch { console.error('Password reset email delivery failed') }
+      })
+    },
       sendVerificationOnSignUp: true, overrideDefaultEmailVerification: true,
-      disableSignUp: true, storeOTP: 'hashed', otpLength: 6, expiresIn: 600, allowedAttempts: 3 }),
-      ...(provider ? [provider, cimd({ fetchClientMetadataResource, metadataProfile: 'mcp-2026-07-28',
-        isMetadataDocumentUrlAllowed: allowedClientDocument, maxCacheEntries: 100,
-        metadataRevalidationInterval: '10m',
-      }), { id: 'amountly-protected-resource', endpoints: {
+      disableSignUp: true, storeOTP: 'hashed', otpLength: authCodeLength, expiresIn: 600, allowedAttempts: 3 }),
+      ...(provider ? [provider, { id: 'amountly-protected-resource', endpoints: {
         // Server API only. The public catch-all and OAuth router never forward
         // this endpoint. Resource validation does not require the caller to
         // possess ChatGPT's private client signing key.
         validateAmountlyToken: createAuthEndpoint('/internal/amountly-token', {
           method: 'POST', body: z.object({ token: z.string().max(256), clientId: z.string().max(256) }),
-        // Use the initialized provider options, including CIMD's discovery
-        // extension. Fresh options cannot validate a discovered ChatGPT client.
+        // Validate through the initialized DCR provider and its stored client policy.
         }, async ctx => getOAuthProviderApi(ctx, provider.options).requireActiveAccessToken(ctx.body.token, ctx.body.clientId)),
       } }] : [])],
     logger: { disabled: true },

@@ -97,7 +97,8 @@ export async function captureReceiptFromFile(file: File, signal?: AbortSignal): 
       403: 'You do not have access to this receipt extraction.',
       413: 'Choose a receipt no larger than 10 MB and a PDF of up to 5 pages.',
       415: 'Choose a valid JPEG, PNG, WebP, or PDF receipt.',
-      429: 'AI usage limit reached. Please try again later.',
+      429: response.headers.has('Retry-After') ? 'Receipt extraction is busy. Try again shortly.'
+        : 'AI usage limit reached. Please try again later.',
     }
     throw new Error(errors[response.status] || 'Receipt extraction is temporarily unavailable. Try again later.')
   }

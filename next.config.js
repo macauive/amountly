@@ -10,7 +10,14 @@ const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {
+    const hsts = process.env.AMOUNTLY_HSTS_INCLUDE_SUBDOMAINS === 'true'
+      ? 'max-age=31536000; includeSubDomains'
+      : 'max-age=31536000'
     return [{
+      source: '/:path*',
+      has: [{ type: 'host', value: 'amountly\\.app' }],
+      headers: [{ key: 'Strict-Transport-Security', value: hsts }],
+    }, {
       source: '/:path*',
       headers: [
         // Baseline for static assets and API responses; page responses use src/proxy.ts.

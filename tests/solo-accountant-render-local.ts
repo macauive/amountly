@@ -61,11 +61,15 @@ async function main() {
   const before = await saved(expenses[0])
   assert.equal((await marker(expenses[0],true,before.updated_at)).status,204)
   const reviewed = await saved(expenses[0]);assert.ok(reviewed.reviewed_at);assert.equal(reviewed.status,'DRAFT')
-  assert.equal((await marker(expenses[0],false,before.updated_at)).status,409)
-  const forged = await api(`/api/data/expenses?id=eq.${expenses[0]}`,'PATCH',{reviewed_at:'2026-01-01T00:00:00Z'})
-  assert.equal(forged.status,403)
   const foreign = (await database.query('select updated_at from public.expenses where id=$1',[expenses[6]])).rows[0]
-  assert.equal((await marker(expenses[6],true,foreign.updated_at.toISOString())).status,403)
+  for (const rejected of [
+    await marker(expenses[0],false,before.updated_at),
+    await api(`/api/data/expenses?id=eq.${expenses[0]}`,'PATCH',{reviewed_at:'2026-01-01T00:00:00Z'}),
+    await marker(expenses[6],true,foreign.updated_at.toISOString()),
+  ]) {
+    assert.equal(rejected.status,400)
+    assert.equal((await rejected.json()).code,'REQUEST_REJECTED')
+  }
   const edited = await api(`/api/data/expenses?id=eq.${expenses[0]}`,'PATCH',{amount:14})
   assert.equal(edited.status,204)
   const changed = await saved(expenses[0]);assert.equal(changed.reviewed_at,null);assert.equal(changed.status,'DRAFT')

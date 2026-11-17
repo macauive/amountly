@@ -3,13 +3,16 @@ import { z } from 'zod/v3'
 import { authPool, getAuth } from '@/lib/platform/auth'
 import { clientForIdentity } from '@/lib/platform/server'
 import { AiHttpError } from '@/lib/ai/server'
-import { allowedClientDocument, chatgptEnabled, mcpResource, oauthIssuer, readScope, connectionScopes } from '@/lib/chatgpt/config'
+import { allowedOAuthClientId, chatgptEnabled, mcpResource, oauthIssuer, readScope, connectionScopes } from '@/lib/chatgpt/config'
 import type { ReviewClient } from '@/lib/financial-review/service'
+import { admitIntegrationRequest } from '@/lib/chatgpt/admission'
+import { ConnectionError } from '@/lib/chatgpt/diagnostics'
 
 export const privateHeaders = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }
 
-// Shared database counters are atomic across processes, with a fixed bounded
-// key space. Caller-controlled IP/forwarded headers never select a rate key.
+// OAuth/MCP account counters use proven owners. Registration uses a separate
+// fixed service bucket; anonymous input cannot create arbitrary durable keys
+// or spend a legitimate account's budget.
 export async function rateLimit(key: string, max: number) {
   const result = await authPool().query(`insert into amountly_auth.mcp_rate (key, window_start, count)
     values ($1, date_trunc('minute', now()), 1)
@@ -29,39 +32,45 @@ export function validateClaims(input: unknown, clientId: string, now = Date.now(
   if (!claims.success || claims.data.iss !== oauthIssuer() || claims.data.client_id !== clientId
     || claims.data.exp <= now || claims.data.cnf !== undefined
     || !(Array.isArray(claims.data.aud) ? claims.data.aud : [claims.data.aud]).includes(mcpResource())) {
-    throw new AiHttpError(401, 'Reconnect Amountly to continue.')
+    throw new ConnectionError(401, 'token_invalid')
   }
-  if (!claims.data.scope.split(' ').includes(readScope)) throw new AiHttpError(403, 'Read permission is required.')
+  if (!claims.data.scope.split(' ').includes(readScope)) throw new ConnectionError(403, 'permission_missing', 'Read permission is required.')
   return claims.data
 }
 
 export async function requireMcpIdentity(request: Request) {
   if (!chatgptEnabled()) throw new AiHttpError(404, 'Not found')
   const authorization = request.headers.get('authorization') ?? ''
-  if (!/^Bearer amt_at_[A-Za-z0-9_-]{20,200}$/.test(authorization)) throw new AiHttpError(401, 'Connect Amountly to continue.')
-  await rateLimit('mcp:authentication', 240)
+  if (!/^Bearer amt_at_[A-Za-z0-9_-]{20,200}$/.test(authorization)) throw new ConnectionError(401, 'token_invalid', 'Connect Amountly to continue.')
+  return admitIntegrationRequest(`mcp:${authorization}`, async () => {
   const token = authorization.slice(7)
-  const lookup = await authPool().query(`select a."clientId" from amountly_auth."oauthAccessToken" a
-    join amountly_auth.mcp_grants g on g.authorization_code_id=a."authorizationCodeId" and g.user_id=a."userId"
-    where a.token=$1 and g.revoked_at is null and g.granted_at > now()-interval '7 days'`,
+  const lookup = await authPool().query(`select a."clientId",
+    (g.revoked_at is null and g.granted_at > now()-interval '7 days') as "grantActive"
+    from amountly_auth."oauthAccessToken" a
+    left join amountly_auth.mcp_grants g on g.authorization_code_id=a."authorizationCodeId" and g.user_id=a."userId"
+    where a.token=$1`,
     [createHash('sha256').update(token.slice('amt_at_'.length)).digest('hex')])
   const clientId: unknown = lookup.rows[0]?.clientId
-  if (typeof clientId !== 'string' || !allowedClientDocument(clientId)) throw new AiHttpError(401, 'Reconnect Amountly to continue.')
+  if (typeof clientId !== 'string' || !allowedOAuthClientId(clientId)) throw new ConnectionError(401, 'token_invalid')
+  if (lookup.rows[0].grantActive !== true) throw new ConnectionError(401, 'grant_inactive')
   let introspected: unknown
   try { introspected = await getAuth().api.validateAmountlyToken({ body: { token, clientId } }) }
-  catch { throw new AiHttpError(401, 'Reconnect Amountly to continue.') }
+  catch { throw new ConnectionError(401, 'token_invalid') }
   const claims = validateClaims(introspected, clientId)
   // Recheck the underlying login session, email verification and active account
   // at the database boundary on every request. Revocation is immediate.
-  const result = await authPool().query(`select u.id, u.email, u."emailVerified", u.disabled, u."bannedUntil", p.is_active
-    from amountly_auth."user" u join amountly_auth.session s on s."userId"=u.id
+  const result = await authPool().query(`select u.id, u.email, u."emailVerified", u.disabled, u."bannedUntil", p.is_active,
+    (s."expiresAt">now()) as "sessionActive"
+    from amountly_auth."user" u left join amountly_auth.session s on s."userId"=u.id and s.id=$2
     join public.users p on p.id=u.id::uuid
-    where u.id=$1 and s.id=$2 and s."expiresAt">now()`, [claims.sub, claims.sid])
+    where u.id=$1`, [claims.sub, claims.sid])
   const row = result.rows[0]
   if (!row || !row.emailVerified || row.disabled || row.is_active !== true
-    || (row.bannedUntil && new Date(row.bannedUntil) > new Date())) throw new AiHttpError(401, 'Reconnect Amountly to continue.')
+    || (row.bannedUntil && new Date(row.bannedUntil) > new Date())) throw new ConnectionError(401, 'account_inactive')
+  if (row.sessionActive !== true) throw new ConnectionError(401, 'session_inactive')
   await rateLimit(`mcp:user:${claims.sub}`, 30)
   return { id: claims.sub, email: z.string().email().max(254).parse(row.email), clientId, scopes: claims.scope.split(' ') }
+  })
 }
 
 export async function mcpClient(request: Request) {

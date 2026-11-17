@@ -11,6 +11,28 @@ const receipt = {
 receipt.category = loadApp()('src/types/enums.ts').ExpenseCategory.other
 const file = () => new File(['synthetic receipt'], 'private-name.png', { type: 'image/png' })
 
+test('receipt upload carries saved capture revision, supports ordinary files, and reports storage/conflict failures', async () => {
+  const originalFetch = global.fetch
+  const owner='00000000-0000-4000-8000-000000000001',id='00000000-0000-4000-8000-000000000002'
+  const path=owner+'/'+id+'.png'
+  let captured,status=201
+  global.fetch=async (url,options)=>{captured={url,...options};return Response.json(status===201?{path}:{error:'safe failure'},{status})}
+  try {
+    const {uploadReceipt}=loadApp({'@/lib/supabase':{getSupabaseClient:()=>({})},
+      '@/services/review.service':{recordError:()=>assert.fail('No financial write expected')},
+    },{NEXT_PUBLIC_BACKEND:'render'})('src/services/expenses.service.ts')
+    const selected=file()
+    assert.equal(await uploadReceipt(selected,{id,revision:1}),path)
+    assert.equal(captured.url,'/api/receipts/upload');assert.equal(captured.body,selected)
+    assert.equal(captured.headers['x-capture-id'],id);assert.equal(captured.headers['x-capture-revision'],'1')
+    assert.equal(await uploadReceipt(selected,{id,revision:0}),path)
+    assert.deepEqual(Object.keys(captured.headers),['Content-Type'],'unsaved captures remain ordinary uploads')
+    assert.equal(await uploadReceipt(selected),path)
+    status=413;await assert.rejects(uploadReceipt(selected),/storage is full/)
+    status=409;await assert.rejects(uploadReceipt(selected,{id,revision:1}),/capture changed/)
+  } finally {global.fetch=originalFetch}
+})
+
 test('receipt proposals clear missing amount/date and unsupported currency; other documents do not become expenses', () => {
   const { receiptExpenseFields } = loadApp()('src/lib/receipt-review.ts')
   const fields = receiptExpenseFields({ ...receipt, amount: '', currency: 'OTHER', expense_date: '' })

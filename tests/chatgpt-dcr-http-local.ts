@@ -1,0 +1,410 @@
+// Disposable PostgreSQL + actual Next.js HTTP rehearsal. No production env is
+// loaded, no email transport is configured, and OAuth callbacks are never followed.
+import assert from 'node:assert/strict'
+import { randomBytes, randomUUID, createHash } from 'node:crypto'
+import { mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises'
+import { tmpdir, userInfo } from 'node:os'
+import { join } from 'node:path'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
+import { Pool } from 'pg'
+import { getMigrations } from 'better-auth/db/migration'
+import { emailOTP } from 'better-auth/plugins'
+import { hashPassword } from 'better-auth/crypto'
+import { oauthProvider } from '@better-auth/oauth-provider'
+import { oauthOptions } from '../src/lib/chatgpt/oauth'
+
+async function main() {
+const exec = promisify(execFile), base = 'http://127.0.0.1:4191'
+const callback = 'https://chatgpt.com/connector_platform_oauth_redirect'
+const resource = base + '/mcp'
+const scratch = await mkdtemp(join(tmpdir(), 'amountly-dcr-local-'))
+const secret = () => randomBytes(32).toString('hex')
+const dbPassword = secret(), password = secret(), userId = randomUUID()
+const email = 'local-dcr-' + randomUUID() + '@example.invalid'
+const data = join(scratch, 'postgres'), passwordFile = join(scratch, 'postgres-password')
+const dbUrl = new URL('postgresql://127.0.0.1:54399/postgres')
+dbUrl.username = userInfo().username; dbUrl.password = dbPassword
+const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'development', NEXT_PUBLIC_BACKEND: 'render',
+  AMOUNTLY_CHATGPT: 'enabled', AMOUNTLY_CHATGPT_DCR: 'enabled',
+  AMOUNTLY_APP_ORIGIN: base,
+  AUTH_DATABASE_URL: dbUrl.href, BETTER_AUTH_SECRET: secret(), POSTGREST_JWT_SECRET: secret(),
+  NEXT_TELEMETRY_DISABLED: '1' }
+// Explicitly clear any inherited deployment/email secrets. This test uses only
+// freshly generated loopback credentials and cannot send signup or reset mail.
+for (const key of ['RESEND_API_KEY', 'RESEND_FROM', 'AMOUNTLY_MIGRATION_DATABASE_URL', 'DATABASE_URL',
+  'DATA_DATABASE_URL', 'OPENAI_API_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) delete env[key]
+Object.assign(process.env, { NODE_ENV: env.NODE_ENV, NEXT_PUBLIC_BACKEND: env.NEXT_PUBLIC_BACKEND,
+  AMOUNTLY_CHATGPT: env.AMOUNTLY_CHATGPT, AMOUNTLY_CHATGPT_DCR: env.AMOUNTLY_CHATGPT_DCR,
+  AMOUNTLY_APP_ORIGIN: base })
+let pgStarted = false, web: ReturnType<typeof spawn> | undefined, pool: Pool | undefined
+let stage = 'initialize', cookie = ''
+async function request(path: string, body?: unknown, headers: Record<string, string> = {}) {
+  return fetch(base + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'manual',
+    headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
+    body: body === undefined ? undefined : JSON.stringify(body) })
+}
+function authorizeQuery(clientId: string, redirect = callback) {
+  const verifier = randomBytes(32).toString('base64url')
+  return { verifier, query: new URLSearchParams({ client_id: clientId, redirect_uri: redirect,
+    response_type: 'code', resource, scope: 'amountly:read offline_access', state: 'local-' + randomUUID(),
+    code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url'), prompt: 'consent' }) }
+}
+async function authorize(clientId: string, redirect = callback, extensions: Record<string, string> = {}) {
+  const grant = authorizeQuery(clientId, redirect)
+  for (const [key, value] of Object.entries(extensions)) grant.query.set(key, value)
+  const first = await request('/api/auth/oauth2/authorize?' + grant.query, undefined, { Accept: 'application/json' })
+  assert.equal(first.status, 200)
+  const loginUrl = new URL((await first.json()).url, base)
+  assert.equal(loginUrl.origin, base); assert.equal(loginUrl.pathname, '/chatgpt/login')
+  const target = await finishLogin(loginUrl)
+  assert.equal(target.origin + target.pathname, redirect)
+  assert.equal(target.searchParams.get('state'), grant.query.get('state'))
+  return { ...grant, code: target.searchParams.get('code')! }
+}
+async function finishLogin(loginUrl: URL) {
+  const login = await request('/api/auth/sign-in/email', { email, password, oauth_query: loginUrl.searchParams.toString() }, { Origin: base })
+  assert.equal(login.status, 200)
+  cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  assert.ok(cookie)
+  const result = await login.json()
+  assert.equal(result.token, undefined)
+  const consentUrl = new URL(result.url ?? result.redirect_uri, base)
+  assert.equal(consentUrl.origin, base); assert.equal(consentUrl.pathname, '/chatgpt/consent')
+  const accepted = await request('/api/auth/oauth2/consent', { accept: true, oauth_query: consentUrl.searchParams.toString() }, { Cookie: cookie, Origin: base })
+  assert.equal(accepted.status, 200)
+  const consent = await accepted.json(), target = new URL(consent.url ?? consent.redirect_uri)
+  assert.equal(target.searchParams.get('iss'), base + '/api/auth')
+  assert.ok(target.searchParams.get('code'))
+  // Do not navigate to the external callback. All code exchange stays local.
+  return target
+}
+async function tokenRequest(values: Record<string, string>) {
+  return fetch(base + '/api/auth/oauth2/token', { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(values) })
+}
+async function authorizeWithSession(clientId: string) {
+  const grant = authorizeQuery(clientId)
+  const started = await request('/api/auth/oauth2/authorize?' + grant.query, undefined, { Cookie: cookie, Accept: 'application/json' })
+  assert.equal(started.status, 200)
+  const consentUrl = new URL((await started.json()).url, base)
+  assert.equal(consentUrl.origin, base); assert.equal(consentUrl.pathname, '/chatgpt/consent')
+  const accepted = await request('/api/auth/oauth2/consent', { accept: true, oauth_query: consentUrl.searchParams.toString() }, { Cookie: cookie, Origin: base })
+  assert.equal(accepted.status, 200)
+  const result = await accepted.json(), target = new URL(result.url ?? result.redirect_uri)
+  assert.equal(target.origin + target.pathname, callback)
+  assert.equal(target.searchParams.get('state'), grant.query.get('state'))
+  assert.equal(target.searchParams.get('iss'), base + '/api/auth')
+  const issued = await tokenRequest({ client_id: clientId, grant_type: 'authorization_code', code: target.searchParams.get('code')!,
+    code_verifier: grant.verifier, redirect_uri: callback, resource })
+  assert.equal(issued.status, 200)
+  return issued.json()
+}
+async function tools(token: string) {
+  return request('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, {
+    Authorization: 'Bearer ' + token, Accept: 'application/json, text/event-stream' })
+}
+async function codexLogin() {
+  const name = 'amountly-local-' + randomUUID()
+  const config = ['-c', 'mcp_servers.' + name + '.url="' + resource + '"', '-c', 'mcp_oauth_credentials_store="keyring"']
+  const client = spawn('codex', [...config, 'mcp', 'login', name, '--no-browser', '--oauth-client-registration', 'auto',
+    '--scopes', 'amountly:read,offline_access'], { stdio: ['pipe', 'pipe', 'pipe'] })
+  let output = '', completed = false
+  const exited = new Promise<number | null>(resolveExit => client.once('exit', code => resolveExit(code)))
+  client.once('error', () => { output = 'local-client-start-error' })
+  const authorization = new Promise<URL>((resolveUrl, rejectUrl) => {
+    const timeout = setTimeout(() => rejectUrl(new Error('Local client authorization timeout')), 45000)
+    const capture = (chunk: Buffer) => {
+      output = (output + chunk.toString()).slice(-32768)
+      const match = output.match(/http:\/\/127\.0\.0\.1:4191\/api\/auth\/oauth2\/authorize\?[^\s<>]+/)
+      if (match) { clearTimeout(timeout); resolveUrl(new URL(match[0])) }
+    }
+    client.stdout.on('data', capture); client.stderr.on('data', capture)
+    void exited.then(() => { clearTimeout(timeout); rejectUrl(new Error('Local client exited before authorization')) })
+  })
+  try {
+    const url = await authorization
+    assert.equal(url.origin, base); assert.match(url.searchParams.get('client_id') ?? '', /^amt_dcr_/)
+    const response = await request(url.pathname + url.search, undefined, { Accept: 'application/json' })
+    assert.equal(response.status, 200)
+    const loginUrl = new URL((await response.json()).url, base)
+    assert.equal(loginUrl.origin, base); assert.equal(loginUrl.pathname, '/chatgpt/login')
+    const target = await finishLogin(loginUrl)
+    const expected = new URL(url.searchParams.get('redirect_uri')!)
+    assert.ok(['127.0.0.1', 'localhost'].includes(expected.hostname))
+    assert.equal(target.origin + target.pathname, expected.origin + expected.pathname)
+    assert.equal(target.searchParams.get('state'), url.searchParams.get('state'))
+    client.stdin.end(target.href + '\n')
+    const timeout = setTimeout(() => client.kill('SIGTERM'), 30000)
+    const code = await exited; clearTimeout(timeout)
+    assert.equal(code, 0)
+    const stored = await pool!.query('select count(*)::int as count from amountly_auth."oauthAccessToken" where "clientId"=$1', [url.searchParams.get('client_id')])
+    assert.ok(stored.rows[0].count > 0, 'Codex itself exchanged the code')
+    completed = true
+  } finally {
+    client.kill('SIGTERM'); output = ''
+    // Target a unique local-only MCP name. Never change saved production config.
+    await exec('codex', [...config, 'mcp', 'logout', name], { timeout: 15000 })
+    if (!completed) console.error('Local Codex login did not complete; captured output was discarded')
+  }
+}
+try {
+  assert.ok(!(await readdir(process.cwd())).some(name => /^\.env(?:\.|$)/.test(name) && name !== '.env.example'),
+    'Run the rehearsal from an isolated checkout without dotenv files')
+  await writeFile(passwordFile, dbPassword, { mode: 0o600 })
+  stage = 'initialize PostgreSQL'
+  await exec('initdb', ['-D', data, '--auth=scram-sha-256', '--pwfile=' + passwordFile, '--no-instructions'], { timeout: 30000 })
+  stage = 'start PostgreSQL'
+  await exec('pg_ctl', ['-D', data, '-l', join(scratch, 'postgres-start.log'), '-o', '-h 127.0.0.1 -p 54399 -k ' + scratch
+    + ' -c log_statement=none -c log_min_error_statement=panic -c log_parameter_max_length=0 -c log_parameter_max_length_on_error=0', '-w', '-t', '10', 'start'], { timeout: 15000 })
+  pgStarted = true
+  stage = 'create local schema'
+  pool = new Pool({ connectionString: dbUrl.href, max: 1 })
+  await pool.query('create schema amountly_auth; create table public.users(id uuid primary key, email text, is_active boolean not null default true)')
+  await pool.query('set search_path=amountly_auth,pg_catalog')
+  const plan = await getMigrations({ database: pool, advanced: { database: { generateId: 'uuid' } },
+    user: { additionalFields: { disabled: { type: 'boolean', required: false, defaultValue: false }, bannedUntil: { type: 'date', required: false } } },
+    rateLimit: { enabled: true, storage: 'database' }, plugins: [emailOTP({ sendVerificationOTP: async () => { throw new Error('Email disabled in local DCR rehearsal') } }),
+      oauthProvider(oauthOptions())] })
+  const sql = (await plan.compileMigrations()).replace('create table "oauthClientAssertion" ("id" uuid', 'create table "oauthClientAssertion" ("id" text')
+  stage = 'apply generated local auth schema'
+  await pool.query(sql)
+  // Only the runtime controls are needed here, with no production data schema.
+  const controls = (await readFile('ops/render/chatgpt-controls.sql', 'utf8')).split('revoke all on all tables')[0]
+  await pool.query(controls)
+  stage = 'seed synthetic local user'
+  await pool.query('insert into amountly_auth."user"(id,name,email,"emailVerified","createdAt","updatedAt",disabled) values($1,\'Local synthetic DCR account\',$2,true,now(),now(),false)', [userId, email])
+  await pool.query('insert into amountly_auth.account(id,"accountId","providerId","userId",password,"createdAt","updatedAt") values($1,$2::text,\'credential\',$2::uuid,$3,now(),now())', [randomUUID(), userId, await hashPassword(password)])
+  await pool.query('insert into public.users(id,email) values($1,$2)', [userId, email])
+  stage = 'start Next.js'
+  web = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'dev', '--webpack', '--hostname', '127.0.0.1', '--port', '4191'], { env, stdio: 'ignore' })
+  const started = Date.now()
+  while (true) {
+    assert.ok(Date.now() - started < 60000, 'local server startup timeout')
+    if (web.exitCode !== null) throw new Error('Local Next.js exited')
+    try { if ((await request('/.well-known/oauth-authorization-server/api/auth')).status === 200) break } catch { /* Startup only. */ }
+    await new Promise(resolveWait => setTimeout(resolveWait, 500))
+  }
+  stage = 'HTTP discovery and registration'
+  const discovery = await (await request('/.well-known/oauth-authorization-server/api/auth')).json()
+  assert.equal(discovery.registration_endpoint, base + '/api/auth/oauth2/register')
+  assert.equal(discovery.client_id_metadata_document_supported, undefined)
+  assert.deepEqual(discovery.token_endpoint_auth_methods_supported, ['none'])
+  const registration = await request('/api/auth/oauth2/register', { client_name: 'ChatGPT', redirect_uris: [callback],
+    token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' })
+  assert.equal(registration.status, 201)
+  const client = await registration.json()
+  assert.match(client.client_id, /^amt_dcr_[A-Za-z0-9_-]{43}$/)
+  assert.equal(client.client_secret, undefined)
+  stage = 'HTTP consent and token exchange'
+  const grant = await authorize(client.client_id)
+  const issued = await tokenRequest({ client_id: client.client_id, grant_type: 'authorization_code', code: grant.code,
+    code_verifier: grant.verifier, redirect_uri: callback, resource })
+  assert.equal(issued.status, 200)
+  const tokens = await issued.json()
+  assert.equal(tokens.expires_in, 600)
+  stage = 'HTTP MCP discovery and token lifecycle'
+  const listed = await tools(tokens.access_token)
+  assert.equal(listed.status, 200)
+  assert.equal((await listed.json()).result.tools.length, 5)
+  const refreshed = await tokenRequest({ client_id: client.client_id, grant_type: 'refresh_token', refresh_token: tokens.refresh_token, resource })
+  assert.equal(refreshed.status, 200)
+  const rotated = await refreshed.json()
+  assert.ok(rotated.refresh_token !== tokens.refresh_token)
+  stage = 'MCP initialize and refreshed-token use'
+  const initialized = await request('/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'local-lifecycle-test', version: '1.0' } } }, {
+    Authorization: 'Bearer ' + rotated.access_token, Accept: 'application/json, text/event-stream' })
+  assert.equal(initialized.status, 200)
+  assert.equal((await tools(rotated.access_token)).status, 200)
+  const refresh = () => tokenRequest({ client_id: client.client_id, grant_type: 'refresh_token', refresh_token: rotated.refresh_token, resource })
+  async function rejectsRefresh(reason: string) {
+    const before = await pool!.query('select count(*)::int as count from amountly_auth."oauthRefreshToken"')
+    const rejected = await refresh()
+    assert.equal(rejected.status, 400, reason)
+    assert.equal((await rejected.json()).error, 'invalid_grant')
+    assert.match(rejected.headers.get('X-Amountly-Request-Id') ?? '', /^[a-f0-9-]{36}$/)
+    assert.equal(rejected.headers.get('Cache-Control'), 'private, no-store')
+    const after = await pool!.query('select count(*)::int as count from amountly_auth."oauthRefreshToken"')
+    assert.equal(after.rows[0].count, before.rows[0].count, 'rejected refresh must not issue tokens')
+    const mcp = await tools(rotated.access_token)
+    assert.equal(mcp.status, 401)
+    assert.match(mcp.headers.get('WWW-Authenticate') ?? '', /invalid_token/)
+  }
+  stage = 'refresh just before the absolute grant cutoff'
+  await pool.query("update amountly_auth.mcp_grants set granted_at=now()-interval '7 days'+interval '1 minute' where user_id=$1", [userId])
+  const beforeCutoff = await refresh()
+  assert.equal(beforeCutoff.status, 200)
+  Object.assign(rotated, await beforeCutoff.json())
+  assert.equal((await tools(rotated.access_token)).status, 200)
+  stage = 'expired absolute grant rejects refresh before token issuance'
+  await pool.query("update amountly_auth.mcp_grants set granted_at=now()-interval '7 days'-interval '1 minute' where user_id=$1", [userId])
+  await rejectsRefresh('expired grant')
+  await pool.query('update amountly_auth.mcp_grants set granted_at=now() where user_id=$1', [userId])
+  stage = 'reauthorization with existing consent and no forced prompt'
+  const silentGrant = authorizeQuery(client.client_id)
+  silentGrant.query.delete('prompt')
+  const reusedConsent = await request('/api/auth/oauth2/authorize?' + silentGrant.query, undefined, { Cookie: cookie, Accept: 'application/json' })
+  assert.equal(reusedConsent.status, 200)
+  const reusedTarget = new URL((await reusedConsent.json()).url, base)
+  assert.equal(reusedTarget.origin + reusedTarget.pathname, callback)
+  assert.equal(reusedTarget.searchParams.get('state'), silentGrant.query.get('state'))
+  const reusedExchange = await tokenRequest({ client_id: client.client_id, grant_type: 'authorization_code', code: reusedTarget.searchParams.get('code')!,
+    code_verifier: silentGrant.verifier, redirect_uri: callback, resource })
+  assert.equal(reusedExchange.status, 200)
+  assert.equal((await tools((await reusedExchange.json()).access_token)).status, 200)
+  stage = 'revoked grant rejects refresh'
+  await pool.query('update amountly_auth.mcp_grants set revoked_at=now() where user_id=$1', [userId])
+  await rejectsRefresh('revoked grant')
+  await pool.query('update amountly_auth.mcp_grants set revoked_at=null where user_id=$1', [userId])
+  stage = 'expired browser session rejects refresh'
+  await pool.query(`update amountly_auth.session set "expiresAt"=now()-interval '1 minute' where "userId"=$1`, [userId])
+  await rejectsRefresh('expired session')
+  await pool.query(`update amountly_auth.session set "expiresAt"=now()+interval '7 days' where "userId"=$1`, [userId])
+  stage = 'disabled account rejects refresh'
+  await pool.query('update amountly_auth."user" set disabled=true where id=$1', [userId])
+  await rejectsRefresh('disabled account')
+  await pool.query('update amountly_auth."user" set disabled=false where id=$1', [userId])
+  stage = 'unverified, banned and inactive-profile accounts reject refresh'
+  await pool.query('update amountly_auth."user" set "emailVerified"=false where id=$1', [userId])
+  await rejectsRefresh('unverified account')
+  await pool.query(`update amountly_auth."user" set "emailVerified"=true, "bannedUntil"=now()+interval '1 day' where id=$1`, [userId])
+  await rejectsRefresh('banned account')
+  await pool.query('update amountly_auth."user" set "bannedUntil"=null where id=$1', [userId])
+  await pool.query('update public.users set is_active=false where id=$1', [userId])
+  await rejectsRefresh('inactive profile')
+  await pool.query('update public.users set is_active=true where id=$1', [userId])
+  stage = 'grant and browser-session ownership cannot cross accounts'
+  const foreignUser = randomUUID()
+  await pool.query(`insert into amountly_auth."user"(id,name,email,"emailVerified","createdAt","updatedAt",disabled)
+    values($1,'Other synthetic user',$2,true,now(),now(),false)`, [foreignUser, 'other-' + randomUUID() + '@example.invalid'])
+  await pool.query('update amountly_auth.mcp_grants set user_id=$1 where user_id=$2', [foreignUser, userId])
+  await rejectsRefresh('grant owned by another user')
+  await pool.query('update amountly_auth.mcp_grants set user_id=$1 where user_id=$2', [userId, foreignUser])
+  await pool.query('update amountly_auth.session set "userId"=$1 where "userId"=$2', [foreignUser, userId])
+  await rejectsRefresh('session owned by another user')
+  await pool.query('update amountly_auth.session set "userId"=$1 where "userId"=$2', [userId, foreignUser])
+  stage = 'website signout rejects refresh and fresh authorization recovers'
+  assert.equal((await request('/api/auth/sign-out', {}, { Origin: base, Cookie: cookie })).status, 200)
+  cookie = ''
+  await rejectsRefresh('signed-out session')
+  const reconnect = await authorize(client.client_id)
+  const reconnected = await tokenRequest({ client_id: client.client_id, grant_type: 'authorization_code', code: reconnect.code,
+    code_verifier: reconnect.verifier, redirect_uri: callback, resource })
+  assert.equal(reconnected.status, 200)
+  Object.assign(rotated, await reconnected.json())
+  assert.equal((await tools(rotated.access_token)).status, 200)
+  const freshRefresh = await refresh()
+  assert.equal(freshRefresh.status, 200)
+  Object.assign(rotated, await freshRefresh.json())
+  assert.equal((await tools(rotated.access_token)).status, 200)
+  console.log('PASS: expired/revoked grants, expired/signed-out sessions and disabled accounts reject refresh without issuing tokens; fresh reconnect recovers')
+  stage = 'owner disconnect including a refresh-only client'
+  const orphanRegistration = await request('/api/auth/oauth2/register', { client_name: 'Local refresh-only client', redirect_uris: [callback],
+    token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' })
+  assert.equal(orphanRegistration.status, 201)
+  const orphan = await orphanRegistration.json(), orphanGrant = await authorize(orphan.client_id)
+  const orphanIssued = await tokenRequest({ client_id: orphan.client_id, grant_type: 'authorization_code', code: orphanGrant.code,
+    code_verifier: orphanGrant.verifier, redirect_uri: callback, resource })
+  assert.equal(orphanIssued.status, 200)
+  const orphanTokens = await orphanIssued.json()
+  await pool.query('delete from amountly_auth."oauthAccessToken" where "clientId"=$1', [orphan.client_id])
+  stage = 'disconnect HTTP response'
+  const disconnected = await request('/api/chatgpt/disconnect', {}, { Cookie: cookie, Origin: base })
+  assert.equal(disconnected.status, 200, 'disconnect HTTP status')
+  assert.equal((await tools(rotated.access_token)).status, 401, 'disconnected access token is rejected')
+  stage = 'disconnect rejects refresh tokens including refresh-only family'
+  for (const [id, refresh] of [[client.client_id, rotated.refresh_token], [orphan.client_id, orphanTokens.refresh_token]])
+    assert.ok([400, 401].includes((await tokenRequest({ client_id: id, grant_type: 'refresh_token', refresh_token: refresh, resource })).status), 'disconnected refresh token is rejected')
+  stage = 'native DCR HTTP callback and token exchange'
+  const nativeCallback = 'http://127.0.0.1:64903/callback'
+  const nativeRegistration = await request('/api/auth/oauth2/register', { client_name: 'Codex', redirect_uris: ['http://127.0.0.1/callback'],
+    token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' })
+  assert.equal(nativeRegistration.status, 201)
+  const native = await nativeRegistration.json()
+  assert.equal(native.application_type, 'native')
+  const nativeGrant = await authorize(native.client_id, nativeCallback)
+  const nativeIssued = await tokenRequest({ client_id: native.client_id, grant_type: 'authorization_code', code: nativeGrant.code,
+    code_verifier: nativeGrant.verifier, redirect_uri: nativeCallback, resource })
+  assert.equal(nativeIssued.status, 200)
+  const nativeTokens = await nativeIssued.json()
+  assert.equal((await tools(nativeTokens.access_token)).status, 200)
+  assert.equal((await fetch(base + '/api/auth/oauth2/revoke', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: native.client_id, token: nativeTokens.refresh_token }) })).status, 200)
+  stage = 'simultaneous refresh replay cannot leave two usable token families'
+  const concurrent = await authorizeWithSession(client.client_id)
+  const refreshConcurrent = () => tokenRequest({ client_id: client.client_id, grant_type: 'refresh_token', refresh_token: concurrent.refresh_token, resource })
+  const racedRefreshes = await Promise.all([refreshConcurrent(), refreshConcurrent()])
+  assert.deepEqual(racedRefreshes.map(response => response.status).sort(), [200, 400])
+  for (const response of racedRefreshes) if (response.status === 200) {
+    const issued = await response.json()
+    assert.equal((await tools(issued.access_token)).status, 401, 'replay revokes any raced issuance')
+  }
+  stage = 'refresh racing owner disconnect cannot restore access'
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const family = await authorizeWithSession(client.client_id)
+    const [refreshing, disconnecting] = await Promise.all([
+      tokenRequest({ client_id: client.client_id, grant_type: 'refresh_token', refresh_token: family.refresh_token, resource }),
+      request('/api/chatgpt/disconnect', {}, { Cookie: cookie, Origin: base }),
+    ])
+    assert.equal(disconnecting.status, 200)
+    assert.ok([200, 400, 401].includes(refreshing.status))
+    const issued = refreshing.status === 200 ? await refreshing.json() : family
+    assert.equal((await tools(issued.access_token)).status, 401, 'revoked grant blocks a raced access token')
+    const retried = await tokenRequest({ client_id: client.client_id, grant_type: 'refresh_token', refresh_token: issued.refresh_token, resource })
+    assert.ok([400, 401].includes(retried.status), 'disconnect blocks subsequent refresh')
+  }
+  console.log('PASS: near-cutoff grants, unverified/banned/inactive accounts, cross-owner grant/session rejection, concurrent refresh replay, and refresh/disconnect races')
+  stage = 'documented per-connector callback and ignored extensions over HTTP'
+  const connectorCallback = 'https://chatgpt.com/connector/oauth/synthetic-http-review'
+  const connectorRegistration = await request('/api/auth/oauth2/register', { client_name: 'ChatGPT', redirect_uris: [connectorCallback],
+    token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: 'amountly:read offline_access' })
+  assert.equal(connectorRegistration.status, 201)
+  const connector = await connectorRegistration.json()
+  const connectorGrant = await authorize(connector.client_id, connectorCallback, { synthetic_extension: 'ignored', sig: 'untrusted', skipConsent: 'true' })
+  const connectorIssued = await tokenRequest({ client_id: connector.client_id, grant_type: 'authorization_code', code: connectorGrant.code,
+    code_verifier: connectorGrant.verifier, redirect_uri: connectorCallback, resource })
+  assert.equal(connectorIssued.status, 200)
+  assert.equal((await tools((await connectorIssued.json()).access_token)).status, 200)
+  const wrongPkce = authorizeQuery(connector.client_id, connectorCallback)
+  wrongPkce.query.set('code_challenge_method', 'plain')
+  wrongPkce.query.set('synthetic_extension', 'ignored')
+  const rejectedPkce = await request('/api/auth/oauth2/authorize?' + wrongPkce.query)
+  assert.equal(rejectedPkce.status, 400)
+  assert.equal((await rejectedPkce.json()).error, 'invalid_request')
+  assert.match(rejectedPkce.headers.get('X-Amountly-Request-Id') ?? '', /^[a-f0-9-]{36}$/)
+  console.log('PASS: per-connector callback with ignored extensions completes login, consent, token exchange and MCP; invalid PKCE still rejected')
+  if (process.argv.includes('--codex')) {
+    stage = 'installed Codex automatic DCR login'
+    await codexLogin()
+    console.log('PASS: installed Codex CLI auto-selected DCR and completed its own token exchange; test credential removed')
+  }
+  console.log('PASS: actual Next.js + disposable PostgreSQL, DCR only: discovery, ChatGPT/native DCR registration, login/consent, PKCE, five tools, refresh and revocation')
+  if (process.argv.includes('--browser')) {
+    const browser = process.argv.includes('--browser-native') ? authorizeQuery(native.client_id, nativeCallback) : authorizeQuery(client.client_id)
+    const response = await request('/api/auth/oauth2/authorize?' + browser.query, undefined, { Accept: 'application/json' })
+    assert.equal(response.status, 200)
+    const loginUrl = new URL((await response.json()).url, base)
+    assert.equal(loginUrl.origin, base)
+    const statePath = join(scratch, 'browser-state.json')
+    await writeFile(statePath, JSON.stringify({ loginUrl: loginUrl.href, email, password }), { mode: 0o600 })
+    console.log('READY: local browser state at ' + statePath)
+    console.log('Type stop to shut down the disposable rehearsal.')
+    await new Promise<void>(resolveStop => { process.stdin.once('data', () => resolveStop()); process.once('SIGTERM', () => resolveStop()); process.once('SIGINT', () => resolveStop()) })
+  }
+} catch (error) {
+  const code = (error as { code?: unknown })?.code
+  console.error('FAIL: local DCR rehearsal at ' + stage + '; ' + (error instanceof assert.AssertionError ? 'assertion failed' : 'setup or runtime error')
+    + (typeof code === 'string' || typeof code === 'number' ? ' (' + code + ')' : ''))
+  process.exitCode = 1
+} finally {
+  process.stdin.pause()
+  web?.kill('SIGTERM')
+  await pool?.end()
+  let stopped = !pgStarted
+  if (pgStarted) await exec('pg_ctl', ['-D', data, '-m', 'fast', '-w', '-t', '10', 'stop'], { timeout: 15000 })
+    .then(() => { stopped = true }).catch(() => { console.error('Local PostgreSQL cleanup needs attention'); process.exitCode = 1 })
+  if (stopped) await rm(scratch, { recursive: true, force: true })
+}
+}
+main().catch(() => { console.error('Local DCR setup could not start'); process.exitCode = 1 })

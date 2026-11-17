@@ -6,7 +6,7 @@ const load=loadApp({
   '@/lib/platform/auth':{getAuth:()=>({$context:Promise.resolve({secret:'synthetic-only'})}),authPool:()=>({query:async()=>({rows:[]})})},
   '@/lib/platform/server':{clientForIdentity:()=>{throw new Error('Unexpected data client')}},
   '@/lib/ai/server':{AiHttpError:class AiHttpError extends Error{constructor(status,message){super(message);this.status=status}}},
-},{AMOUNTLY_APP_ORIGIN:origin,NEXT_PUBLIC_BACKEND:'render',AMOUNTLY_CHATGPT:'enabled',NODE_ENV:'production'})
+},{AMOUNTLY_APP_ORIGIN:origin,NEXT_PUBLIC_BACKEND:'render',AMOUNTLY_CHATGPT:'enabled',AMOUNTLY_CHATGPT_DCR:'enabled',NODE_ENV:'production'})
 const config=load('src/lib/chatgpt/config.ts'), auth=load('src/lib/chatgpt/auth.ts')
 test('only explicit document navigation can bypass the cross-site read guard',()=>{
   const server=loadApp({
@@ -22,26 +22,23 @@ test('only explicit document navigation can bypass the cross-site read guard',()
     assert.throws(()=>server.validateOrigin(headers,false,true))
   }
 })
-test('only exact HTTPS ChatGPT client documents and registered callback shapes are allowed',()=>{
-  for(const uri of ['https://chatgpt.com/oauth/client.json','https://chatgpt.com/oauth/qa-123/client.json']) assert.equal(config.allowedClientDocument(uri),true)
-  for(const uri of ['http://chatgpt.com/oauth/client.json','https://chatgpt.com.evil.example/oauth/client.json','https://chatgpt.com@127.0.0.1/oauth/client.json','https://chatgpt.com/oauth/client.json?url=http://127.0.0.1','https://chatgpt.com/oauth/client.json#fragment','https://chatgpt.com/oauth/../client.json','https://127.0.0.1/oauth/client.json','file:///etc/passwd']) assert.equal(config.allowedClientDocument(uri),false,uri)
-  assert.equal(config.allowedCallback('https://chatgpt.com/connector_platform_oauth_redirect'),true)
-  assert.equal(config.allowedCallback('https://chatgpt.com/connector_platform_oauth_redirect/qa123'),true)
-  for(const uri of ['https://evil.example/callback','https://chatgpt.com/connector_platform_oauth_redirect?next=https://evil.example','https://chatgpt.com:8443/connector_platform_oauth_redirect']) assert.equal(config.allowedCallback(uri),false)
+const client='amt_dcr_'+'a'.repeat(43), user='00000000-0000-4000-8000-000000000001'
+test('only opaque DCR client ID shapes are admitted; client document URLs are rejected',()=>{
+  assert.equal(config.allowedOAuthClientId(client),true)
+  for(const id of ['https://chatgpt.com/oauth/client.json','https://chatgpt.com/oauth/codex/client.json',
+    'https://chatgpt.com/oauth/qa-123/client.json','http://127.0.0.1/client.json','file:///etc/passwd','amt_dcr_short'])
+    assert.equal(config.allowedOAuthClientId(id),false,id)
+  for(const uri of ['https://chatgpt.com/connector_platform_oauth_redirect','https://chatgpt.com/connector_platform_oauth_redirect/qa123'])
+    assert.equal(config.allowedClientCallback(client,uri),true)
+  for(const uri of ['https://evil.example/callback','https://chatgpt.com/connector_platform_oauth_redirect?next=https://evil.example','https://chatgpt.com:8443/connector_platform_oauth_redirect'])
+    assert.equal(config.allowedCallback(uri),false)
 })
-const client='https://chatgpt.com/oauth/client.json', user='00000000-0000-4000-8000-000000000001'
-test('Codex client metadata and exact native callback paths are allowed without expanding ChatGPT callbacks',()=>{
-  const stable='https://chatgpt.com/oauth/codex/client.json'
-  const scoped='https://chatgpt.com/oauth/codex/synthetic-id/client.json'
-  for(const uri of [stable,scoped]) assert.equal(config.allowedClientDocument(uri),true)
-  for(const uri of ['http://127.0.0.1/callback','http://127.0.0.1:64903/callback','http://localhost:4321/callback']) assert.equal(config.allowedClientCallback(stable,uri),true,uri)
-  assert.equal(config.allowedClientCallback(scoped,'http://127.0.0.1:4321/callback/synthetic-id'),true)
-  for(const uri of ['http://127.0.0.1:0/callback','http://127.0.0.1:65536/callback','http://127.1:4321/callback','http://2130706433:4321/callback','http://localhost.evil.example:4321/callback','http://127.0.0.1.evil.example/callback','http://localhost./callback','http://[::1]:4321/callback','https://127.0.0.1/callback','http://127.0.0.1:4321/admin','http://127.0.0.1:4321/path/../callback','http://user@127.0.0.1:4321/callback','http://127.0.0.1:4321/callback?','http://127.0.0.1:4321/callback#']) assert.equal(config.allowedCallback(uri),false,uri)
-  assert.equal(config.allowedClientCallback(client,'http://127.0.0.1:4321/callback'),false)
-  assert.equal(config.allowedClientCallback(stable,'https://chatgpt.com/connector_platform_oauth_redirect'),false)
-  assert.equal(config.allowedClientCallback(scoped,'http://127.0.0.1:4321/callback'),false)
-  assert.equal(config.allowedClientCallback(scoped,'http://127.0.0.1:4321/callback/different'),false)
-  for(const uri of ['https://chatgpt.com/oauth/codex/id/nested/client.json',stable+'?',stable+'#']) assert.equal(config.allowedClientDocument(uri),false)
+test('native DCR callbacks retain canonical loopback host and bounded path checks',()=>{
+  for(const uri of ['http://127.0.0.1/callback','http://127.0.0.1:64903/callback','http://localhost:4321/callback','http://127.0.0.1:4321/callback/synthetic-id'])
+    assert.equal(config.allowedClientCallback(client,uri),true,uri)
+  for(const uri of ['http://127.0.0.1:0/callback','http://127.0.0.1:65536/callback','http://127.1:4321/callback','http://2130706433:4321/callback','http://localhost.evil.example:4321/callback','http://127.0.0.1.evil.example/callback','http://localhost./callback','http://[::1]:4321/callback','https://127.0.0.1/callback','http://127.0.0.1:4321/admin','http://127.0.0.1:4321/path/../callback','http://user@127.0.0.1:4321/callback','http://127.0.0.1:4321/callback?','http://127.0.0.1:4321/callback#'])
+    assert.equal(config.allowedCallback(uri),false,uri)
+  assert.equal(config.allowedClientCallback('https://chatgpt.com/oauth/codex/client.json','http://127.0.0.1:4321/callback'),false)
 })
 test('native redirects still require the provider registered-metadata match',async()=>{
   const options=load('src/lib/chatgpt/oauth.ts').oauthOptions()
@@ -51,7 +48,7 @@ test('native redirects still require the provider registered-metadata match',asy
 })
 test('browser return navigation is bound to the original callback, state and issuer',()=>{
   const redirect=load('src/lib/chatgpt/redirect.ts')
-  for(const [clientId,callback] of [['https://chatgpt.com/oauth/codex/client.json','http://127.0.0.1:4321/callback'],[client,'https://chatgpt.com/connector_platform_oauth_redirect']]) {
+  for(const [clientId,callback] of [[client,'http://127.0.0.1:4321/callback'],[client,'https://chatgpt.com/connector_platform_oauth_redirect']]) {
     const query=new URLSearchParams({client_id:clientId,redirect_uri:callback,state:'synthetic-state'}).toString()
     const target=new URL(callback);target.search=new URLSearchParams({code:'synthetic-code',state:'synthetic-state',iss:origin+'/api/auth'}).toString()
     assert.equal(redirect.allowedConnectionRedirect(target.href,query,origin),true)
@@ -90,8 +87,8 @@ test('authorization rejects unexpected identity, scopes, resources, PKCE modes a
   const query=load('src/lib/chatgpt/query.ts')
   const fields={client_id:client,redirect_uri:'https://chatgpt.com/connector_platform_oauth_redirect',response_type:'code',scope:'amountly:read offline_access',state:'synthetic-state',resource:origin+'/mcp',code_challenge_method:'S256',code_challenge:'a'.repeat(43)}
   assert.doesNotThrow(()=>query.validateAuthorization(new URLSearchParams(fields)))
-  assert.doesNotThrow(()=>query.validateAuthorization(new URLSearchParams({...fields,client_id:'https://chatgpt.com/oauth/codex/client.json',redirect_uri:'http://127.0.0.1:64903/callback'})))
-  assert.throws(()=>query.validateAuthorization(new URLSearchParams({...fields,redirect_uri:'http://127.0.0.1:64903/callback'})))
+  assert.doesNotThrow(()=>query.validateAuthorization(new URLSearchParams({...fields,redirect_uri:'http://127.0.0.1:64903/callback'})))
+  assert.throws(()=>query.validateAuthorization(new URLSearchParams({...fields,client_id:'https://chatgpt.com/oauth/client.json'})))
   // OpenAI's dashboard relay state includes its return route and exceeds the
   // short state values generated by ordinary OAuth clients.
   assert.doesNotThrow(()=>query.validateAuthorization(new URLSearchParams({...fields,state:'openai_platform_oauth_relay__'+'a'.repeat(1000)})))
@@ -101,4 +98,46 @@ test('authorization rejects unexpected identity, scopes, resources, PKCE modes a
   assert.throws(()=>query.validateAuthorization(duplicate))
   assert.throws(()=>query.signedSearchParams({client_id:[client,client]}))
   assert.equal(new URLSearchParams(query.signedSearchParams({ba_param:['scope','state']})).getAll('ba_param').length,2)
+})
+
+test('per-connector callback allowlist rejects aliases, malformed IDs and callback URL components', () => {
+  const uri = 'https://chatgpt.com/connector/oauth/review_123-id'
+  assert.equal(config.allowedClientCallback(client, uri), true)
+  for (const invalid of [uri + '?', uri + '#', uri + '/other', uri.replace('review_123-id', ''),
+    uri.replace('review_123-id', 'a'.repeat(129)), uri.replace('review_123-id', '%61'),
+    uri.replace('/connector/', '/other/../connector/'), uri.replace('chatgpt.com', 'chatgpt.com.evil.example'),
+    uri.replace('https:', 'http:'), uri.replace('chatgpt.com', 'user@chatgpt.com'),
+    uri.replace('chatgpt.com', 'chatgpt.com:443')]) assert.equal(config.allowedClientCallback(client, invalid), false)
+})
+
+test('authorization diagnostics identify each validation check without input values', () => {
+  const query = load('src/lib/chatgpt/query.ts')
+  const { createConnectionDiagnostics, AuthorizationRequestError, ConnectionError } = load('src/lib/chatgpt/diagnostics.ts')
+  const fields = { client_id: client, redirect_uri: 'https://chatgpt.com/connector_platform_oauth_redirect', response_type: 'code',
+    scope: 'amountly:read offline_access', state: 'synthetic-private-state', resource: origin + '/mcp', code_challenge_method: 'S256', code_challenge: 'a'.repeat(43) }
+  const cases = [
+    [{ extra: 'a'.repeat(4096) }, 'authorize_query_too_large'],
+    [{ client_id: '' }, 'authorize_client_missing'], [{ client_id: 'unsupported' }, 'authorize_client_invalid'],
+    [{ redirect_uri: '' }, 'authorize_callback_missing'], [{ redirect_uri: 'https://evil.example' }, 'authorize_callback_disallowed'],
+    [{ response_type: 'token' }, 'authorize_response_type_invalid'], [{ resource: '' }, 'authorize_resource_missing'],
+    [{ resource: origin + '/admin' }, 'authorize_resource_mismatch'], [{ code_challenge_method: 'plain' }, 'authorize_pkce_method_invalid'],
+    [{ code_challenge: '' }, 'authorize_pkce_challenge_invalid'], [{ state: '' }, 'authorize_state_invalid'],
+    [{ scope: 'amountly:write' }, 'authorize_scope_invalid'],
+  ]
+  const entries = [], diagnose = createConnectionDiagnostics(entry => entries.push(JSON.parse(entry)))
+  for (const [changes, reason] of cases) assert.throws(() => query.normalizeAuthorization(new URLSearchParams({ ...fields, ...changes })), error => {
+    assert.ok(error instanceof AuthorizationRequestError)
+    assert.ok(!(error instanceof ConnectionError))
+    diagnose(new Response(null, { status: 400 }), 'oauth:authorize', error)
+    return error.reason === reason && entries.at(-1).reason === reason
+  })
+  for (const key of ['client_id', 'state', 'unknown']) {
+    const duplicate = new URLSearchParams({ ...fields, unknown: 'ignored' }); duplicate.append(key, 'duplicate')
+    assert.throws(() => query.normalizeAuthorization(duplicate), error => error.reason === 'authorize_duplicate_parameter')
+  }
+  const normalized = query.normalizeAuthorization(new URLSearchParams({ ...fields, unknown: 'ignored', login_hint: '' }))
+  assert.equal(normalized.has('unknown'), false); assert.equal(normalized.has('login_hint'), false)
+  assert.equal(normalized.get('state'), fields.state)
+  assert.equal(JSON.stringify(entries).includes(fields.state), false)
+  for (const entry of entries) assert.deepEqual(Object.keys(entry).sort(), ['event', 'reason', 'requestId', 'route', 'status'])
 })

@@ -457,7 +457,7 @@ function ExpensesWorkspace() {
 
     try {
       if (receiptFile && uploadedReceipt.current?.file !== receiptFile) {
-        uploadedReceipt.current = { file: receiptFile, path: await uploadReceipt(receiptFile) }
+        uploadedReceipt.current = { file: receiptFile, path: await uploadReceipt(receiptFile, activeCapture ?? undefined) }
       }
       if (!mounted.current) return
       const receiptPath = receiptFile ? uploadedReceipt.current?.path : selectedExpense?.receipt_path
@@ -819,7 +819,7 @@ function ExpensesWorkspace() {
                     required
                   />
                 </div>
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label htmlFor="category">Category *</Label>
                   <Select
                     disabled={!!extracting}
@@ -839,7 +839,7 @@ function ExpensesWorkspace() {
                   </Select>
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="flex flex-col gap-2">
                 <Label htmlFor="expense_currency">Currency *</Label>
                 <Select name="expense_currency" value={formData.currency} required disabled={!!extracting} onValueChange={value => changeFormData({ currency: value })}>
                   <SelectTrigger id="expense_currency"><SelectValue placeholder="Choose the receipt currency" /></SelectTrigger>
@@ -872,7 +872,7 @@ function ExpensesWorkspace() {
                 </div>
               </div>
               <Button type="button" variant="ghost" className="justify-start" aria-expanded={detailsOpen} onClick={()=>setDetailsOpen(v=>!v)}>Add details {detailsOpen?'−':'+'}</Button>
-              {(detailsOpen||readOnlyExpense)&&<div className="grid gap-4">              <div className="space-y-2">
+              {(detailsOpen||readOnlyExpense)&&<div className="grid gap-4">              <div className="flex flex-col gap-2">
                 <Label htmlFor="project">Project (optional)</Label>
                 <Select
                   disabled={!!extracting}

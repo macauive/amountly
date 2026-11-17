@@ -20,9 +20,7 @@ export async function ensureOwnProfile(authUser: AuthUser, accountType: AccountT
   if (!created.error && created.data) return created.data as User
   // Multiple tabs can initialize the profile concurrently; never upsert over
   // an existing role or workspace to recover from that conflict.
-  if (created.error?.code === '23505') {
-    const retried = await read()
-    if (!retried.error && retried.data) return retried.data as User
-  }
+  const retried = await read()
+  if (!retried.error && retried.data) return retried.data as User
   throw new Error('Could not finish setting up your profile. Please try again.')
 }

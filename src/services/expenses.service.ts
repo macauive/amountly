@@ -92,7 +92,7 @@ export async function archiveExpense(id: string, expectedUpdatedAt: string): Pro
 }
 
 // Upload receipt
-export async function uploadReceipt(file: File): Promise<string> {
+export async function uploadReceipt(file: File, capture?: { id: string; revision: number }): Promise<string> {
   const supabase = getSupabaseClient()
   const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf'])
   const maxBytes = 10 * 1024 * 1024
@@ -106,8 +106,10 @@ export async function uploadReceipt(file: File): Promise<string> {
   }
 
   if (usesRenderBackend) {
-    const response = await fetch('/api/receipts/upload', { method: 'PUT', headers: { 'Content-Type': file.type }, body: file })
-    if (!response.ok) throw new Error('Could not upload the receipt. Try again.')
+    const headers: Record<string,string> = { 'Content-Type': file.type }
+    if (capture && capture.revision > 0) { headers['x-capture-id'] = capture.id; headers['x-capture-revision'] = String(capture.revision) }
+    const response = await fetch('/api/receipts/upload', { method: 'PUT', headers, body: file })
+    if (!response.ok) throw new Error(response.status === 413 ? 'Receipt storage is full. Contact support before uploading more files.' : response.status === 409 ? 'This capture changed. Reopen it before saving.' : 'Could not upload the receipt. Try again.')
     const data = await response.json()
     if (typeof data.path !== 'string' || !/^[0-9a-f-]{36}\/[0-9a-f-]{36}\.(jpg|png|webp|pdf)$/.test(data.path)) throw new Error('Invalid receipt response.')
     return data.path

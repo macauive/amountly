@@ -23,19 +23,21 @@ const completed = result => ({ status: 'completed', output: [
 // clients and the separately tested file decoder are replaced. No live AI or writes.
 function harness(t, options = {}) {
   const calls = { auth: 0, profiles: 0, validation: 0, quota: 0, provider: 0, writes: 0, payloads: [] }
+  const otherUser = '00000000-0000-4000-8000-000000000002'
+  const alternateToken = 'synthetic_second_session_token_00000000'
   const db = {
-    auth: { getUser: async () => {
+    auth: { getUser: async token => {
       calls.auth++
       return options.anonymous || options.invalidToken
         ? { data: {}, error: new Error('private auth detail') }
-        : { data: { user: { id: ownUser } }, error: null }
+        : { data: { user: { id: options.secondUser && token === alternateToken ? otherUser : ownUser } }, error: null }
     } },
     from: table => {
       assert.equal(table, 'users', 'Receipt extraction must not access financial tables')
       return { select: fields => {
         assert.equal(fields, 'is_active')
         return { eq: (field, id) => {
-          assert.equal(field, 'id'); assert.equal(id, ownUser)
+          assert.equal(field, 'id'); assert.ok(id === ownUser || (options.secondUser && id === otherUser))
           return { single: async () => {
             calls.profiles++
             return { data: { is_active: options.active !== false }, error: null }
@@ -72,7 +74,12 @@ function harness(t, options = {}) {
   const overrides = {
     'next/server': { NextResponse: { json: (value, init) => Response.json(value, init) } },
     '@supabase/supabase-js': { createClient: () => db },
-    '@/lib/ai/receipt-file': { validateReceiptFile: async (bytes, mime) => {
+    '@/lib/ai/receipt-file': { validateReceiptFile: async (bytes, mime, _user, beforeDecode) => {
+      if (options.decoderBusy) {
+        const { AiHttpError } = load('src/lib/ai/server.ts')
+        throw new AiHttpError(429, 'Receipt processing is busy. Try again shortly.', 3)
+      }
+      await beforeDecode()
       calls.validation++
       assert.ok(Buffer.isBuffer(bytes))
       if (options.validationHandler) return options.validationHandler(bytes, mime)
@@ -118,7 +125,7 @@ function harness(t, options = {}) {
     NEXT_PUBLIC_SUPABASE_ANON_KEY: 'synthetic-public-test-key',
     OPENAI_API_KEY: 'synthetic-local-test-key', AMOUNTLY_APP_ORIGIN: appOrigin,
   })
-  return { calls, load, restore: () => fetchMock.mock.restore() }
+  return { calls, load, alternateToken, restore: () => fetchMock.mock.restore() }
 }
 
 function request(body = rawImage, headers = {}, query = '', signal) {
@@ -201,16 +208,16 @@ test('receipt endpoint enforces declared and actual streamed 10 MiB limits befor
   }
 })
 
-test('empty and malformed receipts fail before quota and unexpected decoder errors stay private', async t => {
+test('empty input fails before quota and decoder failures consume quota without exposing details', async t => {
   const empty = harness(t)
   await denied(empty, request(Buffer.alloc(0)), 400)
   empty.restore()
   const malformed = harness(t, { validationError: true })
-  await denied(malformed, request(Buffer.from('malformed synthetic input')), 400)
+  await denied(malformed, request(Buffer.from('malformed synthetic input')), 400, { quota: 1 })
   assert.equal(malformed.calls.validation, 1)
   malformed.restore()
   const crashed = harness(t, { validationThrows: true })
-  await denied(crashed, request(), 502)
+  await denied(crashed, request(), 502, { quota: 1 })
   assert.equal(crashed.calls.validation, 1)
 })
 
@@ -221,9 +228,16 @@ test('durable receipt quota denies exhaustion, uncertain results and database fa
   ]) {
     const h = harness(t, options)
     await denied(h, request(), status, { quota: 1 })
-    assert.equal(h.calls.validation, 1)
+    assert.equal(h.calls.validation, 0)
     h.restore()
   }
+})
+
+test('decoder admission denial does not spend AI quota', async t => {
+  const h = harness(t, { decoderBusy: true })
+  const response = await denied(h, request(), 429)
+  assert.equal(response.headers.get('Retry-After'), '3')
+  assert.equal(h.calls.validation, 0)
 })
 
 test('all accepted image MIME types send normalized image data with strict, bounded, non-stored Responses requests', async t => {
@@ -336,20 +350,20 @@ test('sensitive text in provider fields is independently redacted before returni
   assert.equal(h.calls.writes, 0)
 })
 
-test('receipt concurrency gate rejects a third in-flight extraction and releases slots after completion or error', async t => {
-  const releases = []
-  const h = harness(t, { providerHandler: async () => {
-    if (releases.length < 2) return new Promise(resolve => releases.push(resolve))
+test('receipt concurrency is scoped to the authenticated user and releases after completion or error', async t => {
+  let release
+  const h = harness(t, { secondUser: true, providerHandler: async () => {
+    if (!release) return new Promise(resolve => { release = resolve })
     return Response.json(completed(validResult))
   } })
   const { POST } = h.load(routePath)
-  const pending = [POST(request()), POST(request())]
-  await settleUntil(() => releases.length === 2)
-  await denied(h, request(), 429, { provider: 2, quota: 2 })
-  assert.equal(h.calls.validation, 2)
-  releases.forEach(release => release(Response.json(completed(validResult))))
-  const responses = await Promise.all(pending)
-  assert.deepEqual(responses.map(response => response.status), [200, 200])
+  const pending = POST(request())
+  await settleUntil(() => typeof release === 'function')
+  await denied(h, request(), 429, { provider: 1, quota: 1 })
+  assert.equal(h.calls.validation, 1)
+  assert.equal((await POST(request(undefined, { authorization: 'Bearer ' + h.alternateToken }))).status, 200)
+  release(Response.json(completed(validResult)))
+  assert.equal((await pending).status, 200)
   assert.equal((await POST(request())).status, 200)
   h.restore()
 
@@ -423,7 +437,7 @@ test('cancelling an in-flight receipt upload cancels and unlocks its reader befo
   assert.equal((await POST(request())).status, 200)
 })
 
-test('cancellation while decoding prevents subsequent quota consumption and provider calls', async t => {
+test('cancellation while decoding prevents provider calls after quota admission', async t => {
   const controller = new AbortController()
   let completeValidation, validations = 0
   const h = harness(t, { validationHandler: async () => {
@@ -439,6 +453,6 @@ test('cancellation while decoding prevents subsequent quota consumption and prov
   const response = await pending
   assert.equal(response.status, 408)
   assert.equal(h.calls.validation, 1)
-  assert.equal(h.calls.quota, 0); assert.equal(h.calls.provider, 0); assert.equal(h.calls.writes, 0)
+  assert.equal(h.calls.quota, 1); assert.equal(h.calls.provider, 0); assert.equal(h.calls.writes, 0)
   assert.equal((await POST(request())).status, 200)
 })

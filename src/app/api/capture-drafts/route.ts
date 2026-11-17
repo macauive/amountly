@@ -7,11 +7,13 @@ import { requiredSecret, usesRenderBackend } from '@/lib/platform/config'
 import { AiHttpError } from '@/lib/ai/server'
 import { readBoundedBytes, readBoundedJson } from '@/lib/http'
 import { validateReceiptFile } from '@/lib/ai/receipt-file'
+import { limitInFlight } from '@/lib/in-flight'
 import { captureDraftSchema, captureWriteSchema } from '@/lib/capture-drafts'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 let pool: Pool | undefined
+const acquireCapture = limitInFlight(2, 4)
 const headers = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }
 const columns = 'id,revision,updated_at,payload,file_name,content_type'
 const querySchema = z.object({ id: z.string().uuid().optional(), file: z.literal('1').optional(), revision: z.string().regex(/^[1-9][0-9]{0,9}$/).refine(value=>Number(value)<=2147483647).optional() }).strict()
@@ -20,6 +22,7 @@ const normalize = (row: Record<string, unknown>) => captureDraftSchema.parse({ .
 
 async function handle(request: Request) {
   if (!usesRenderBackend) return Response.json({ error: 'Not found' }, { status: 404, headers })
+  let release: (() => void) | null = null
   let tx
   try {
     validateOrigin(request.headers, request.method !== 'GET')
@@ -33,6 +36,8 @@ async function handle(request: Request) {
     let write, contents: Buffer | null = null, fileName: string | null = null, type: string | null = null
     if (request.method === 'PUT') {
       if (!request.headers.get('content-type')?.startsWith('multipart/form-data; boundary=')) throw new AiHttpError(415, 'Expected capture form')
+      release = acquireCapture(identity.id)
+      if (!release) throw new AiHttpError(429, 'Capture is busy. Try again shortly.')
       const bytes = await readBoundedBytes(request, 10 * 1024 * 1024 + 65536)
       const form = await new Response(new Uint8Array(bytes), { headers: { 'Content-Type': request.headers.get('content-type')! } }).formData()
       if ([...form.keys()].some(key => !['metadata','file'].includes(key) || form.getAll(key).length !== 1)) throw new AiHttpError(400, 'Unexpected capture fields')
@@ -43,7 +48,7 @@ async function handle(request: Request) {
       if (file !== null) {
         if (!(file instanceof File) || !file.size || file.size > 10 * 1024 * 1024) throw new AiHttpError(413, 'Invalid receipt size')
         contents = Buffer.from(await file.arrayBuffer())
-        await validateReceiptFile(contents, file.type)
+        await validateReceiptFile(contents, file.type, identity.id)
         fileName = file.name.normalize('NFKC').replace(/[\u0000-\u001f\u007f/\\]/g, '_').slice(0, 200) || 'receipt'
         type = file.type
       }
@@ -58,7 +63,9 @@ async function handle(request: Request) {
     let response: Response
     if (request.method === 'GET') {
       if (query.file) {
-        const result = await tx.query('select contents,content_type from amountly_files.capture_drafts where id=$1 and owner_id=$2 and revision=$3', [query.id, identity.id, query.revision])
+        const result = await tx.query(`select coalesce(d.contents,r.contents) as contents,d.content_type
+          from amountly_files.capture_drafts d left join amountly_files.receipts r on r.path=d.receipt_path and r.owner_id=d.owner_id
+          where d.id=$1 and d.owner_id=$2 and d.revision=$3`, [query.id, identity.id, query.revision])
         if (!result.rows[0]?.contents) throw new AiHttpError(404, 'Capture unavailable')
         response = new Response(new Uint8Array(result.rows[0].contents), { headers: { ...headers, 'Content-Type': result.rows[0].content_type, 'Content-Disposition': 'attachment; filename="receipt"', 'Content-Security-Policy': "default-src 'none'; sandbox" } })
       } else {
@@ -66,10 +73,12 @@ async function handle(request: Request) {
         response = Response.json(result.rows.map(normalize), { headers })
       }
     } else if (write) {
+      const guard = await tx.query('select amountly_files.storage_budget_ready() as ready')
+      if (guard.rows[0]?.ready !== true) throw new AiHttpError(503, 'Capture storage unavailable')
       // Serialize this owner's finite capture set, including simultaneous creates.
       await tx.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [identity.id])
       const digest = contents ? createHash('sha256').update(contents).digest('hex') : null
-      const existing = await tx.query('select revision,payload,file_sha256,file_name,content_type from amountly_files.capture_drafts where id=$1 and owner_id=$2 for update', [write.id, identity.id])
+      const existing = await tx.query('select revision,payload,file_sha256,file_name,content_type,receipt_path from amountly_files.capture_drafts where id=$1 and owner_id=$2 for update', [write.id, identity.id])
       let revision = write.revision
       if (existing.rows[0]) {
         const row = existing.rows[0]
@@ -77,7 +86,10 @@ async function handle(request: Request) {
         // The identical original request can safely recover a lost save response.
         if (row.revision === revision + 1 && same.rows[0].same && row.file_sha256 === digest && row.file_name === fileName && row.content_type === type) revision = row.revision
         else if (row.revision !== revision) throw new AiHttpError(409, 'Capture changed')
-        else await tx.query('update amountly_files.capture_drafts set payload=$1,contents=$2,file_name=$3,content_type=$4,file_sha256=$5,revision=revision+1,updated_at=now() where id=$6 and owner_id=$7', [write.payload, contents, fileName, type, digest, write.id, identity.id])
+        else {
+          const receiptPath = row.receipt_path && row.file_sha256 === digest && row.content_type === type ? row.receipt_path : null
+          await tx.query('update amountly_files.capture_drafts set payload=$1,contents=$2,file_name=$3,content_type=$4,file_sha256=$5,receipt_path=$6,revision=revision+1,updated_at=now() where id=$7 and owner_id=$8', [write.payload, receiptPath ? null : contents, fileName, type, digest, receiptPath, write.id, identity.id])
+        }
       } else {
         if (revision !== 0) throw new AiHttpError(409, 'Capture unavailable')
         const count = await tx.query('select count(*)::int as count from amountly_files.capture_drafts where owner_id=$1', [identity.id])
@@ -95,9 +107,13 @@ async function handle(request: Request) {
     return response
   } catch (error) {
     if (tx) await tx.query('rollback').catch(() => {})
-    const status = error instanceof AiHttpError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : 503
+    const quota = typeof error === 'object' && error !== null && 'code' in error && error.code === 'PT413'
+    const status = quota ? 413 : error instanceof AiHttpError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : 503
     return Response.json({ error: 'Could not access this capture.' }, { status, headers })
-  } finally { tx?.release() }
+  } finally {
+    tx?.release()
+    release?.()
+  }
 }
 export const GET = handle
 export const PUT = handle

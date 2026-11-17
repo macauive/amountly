@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import sharp from 'sharp'
 import { AiHttpError } from './server'
+import { limitInFlight } from '@/lib/in-flight'
 
 const maxBytes = 10 * 1024 * 1024
 const maxPixels = 25_000_000
@@ -12,7 +13,7 @@ const imageFormats: Record<string, string> = {
   webp: 'image/webp',
 }
 const supportedTypes = new Set([...Object.values(imageFormats), 'application/pdf'])
-let activeChecks = 0
+const acquireDecoder = limitInFlight(1, 2)
 
 function invalidPdf() {
   return new AiHttpError(400, 'Choose an unencrypted, readable PDF with at most 5 pages.')
@@ -54,7 +55,7 @@ async function validatePdf(bytes: Buffer) {
 
 // Server-only boundary: decode and verify content before sending any file to AI.
 // The returned image is a metadata-free, bounded derivative; PDFs stay original.
-export async function validateReceiptFile(bytes: Buffer, declaredMime: string): Promise<{ data: Buffer; mime: string }> {
+export async function validateReceiptFile(bytes: Buffer, declaredMime: string, userId: string, beforeDecode?: () => Promise<void>): Promise<{ data: Buffer; mime: string }> {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
     throw new AiHttpError(400, 'Choose a nonempty receipt file.')
   }
@@ -63,9 +64,10 @@ export async function validateReceiptFile(bytes: Buffer, declaredMime: string): 
   if (!supportedTypes.has(mime)) {
     throw new AiHttpError(415, 'Choose a JPEG, PNG, WebP, or PDF receipt.')
   }
-  if (activeChecks >= 2) throw new AiHttpError(429, 'Receipt processing is busy. Try again shortly.')
-  activeChecks++
+  const release = acquireDecoder(userId)
+  if (!release) throw new AiHttpError(429, 'Receipt processing is busy. Try again shortly.', 3)
   try {
+    await beforeDecode?.()
     if (mime === 'application/pdf') {
       await validatePdf(bytes)
       return { data: bytes, mime }
@@ -102,6 +104,6 @@ export async function validateReceiptFile(bytes: Buffer, declaredMime: string): 
       throw new AiHttpError(400, 'Choose a readable, single-frame receipt image under 25 megapixels.')
     }
   } finally {
-    activeChecks--
+    release()
   }
 }

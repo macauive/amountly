@@ -5,13 +5,15 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Loader2, MailCheck, RotateCw } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { authCodeLength } from '@/lib/platform/otp-code'
+import { usesRenderBackend } from '@/lib/platform/config'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp'
 import { Label } from '@/components/ui/label'
 
-const OTP_LENGTH = 8
+const OTP_LENGTH = usesRenderBackend ? authCodeLength : 8
 const VERIFICATION_TYPES = ['signup', 'email', 'magiclink', 'recovery', 'invite', 'email_change'] as const
 
 type VerificationType = (typeof VERIFICATION_TYPES)[number]
@@ -122,7 +124,9 @@ function VerifyPageContent() {
         </div>
         <CardTitle className="text-2xl font-bold">Verify your email</CardTitle>
         <CardDescription>
-          Enter the {OTP_LENGTH}-digit code from your email, or open the link we sent and we&apos;ll finish verification automatically.
+          {usesRenderBackend
+            ? `Enter the ${OTP_LENGTH}-digit code from your email to verify your account.`
+            : `Enter the ${OTP_LENGTH}-digit code from your email, or open the link we sent and we'll finish verification automatically.`}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -163,7 +167,7 @@ function VerifyPageContent() {
             >
               <InputOTPGroup>
                 {Array.from({ length: OTP_LENGTH }, (_, index) => (
-                  <InputOTPSlot key={index} index={index} />
+                  <InputOTPSlot key={index} index={index} className="w-6 sm:w-9" />
                 ))}
               </InputOTPGroup>
             </InputOTP>
@@ -185,6 +189,9 @@ function VerifyPageContent() {
         <p className="text-center text-sm text-muted-foreground">
           Already verified? <Link href="/login" className="text-primary hover:underline">Back to sign in</Link>
         </p>
+        {usesRenderBackend && (
+          <Link href="/reset-password" className="text-sm text-primary hover:underline">Reset your password</Link>
+        )}
       </CardFooter>
     </Card>
   )

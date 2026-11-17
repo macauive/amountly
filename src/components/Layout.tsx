@@ -140,7 +140,7 @@ export function Layout({ children, activeModule, onModuleChange }: LayoutProps) 
           </SidebarFooter>
         </Sidebar>
         <main className="flex-1 overflow-hidden">
-          <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+          <header className="border-b bg-background/95 backdrop-blur-sm supports-backdrop-filter:bg-background/60">
             <div className="flex h-14 items-center px-4">
               <SidebarTrigger />
               <div className="flex-1" />

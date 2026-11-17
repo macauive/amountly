@@ -4,6 +4,7 @@ import { createAmountlyMcp } from '@/lib/chatgpt/tools'
 import { appOrigin } from '@/lib/platform/config'
 import { chatgptEnabled, readScope } from '@/lib/chatgpt/config'
 import { AiHttpError } from '@/lib/ai/server'
+import { diagnoseConnection } from '@/lib/chatgpt/diagnostics'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -33,11 +34,11 @@ export async function POST(request: Request) {
       }
       const headers = new Headers(response.headers)
       for (const [key, value] of Object.entries(privateHeaders)) headers.set(key, value)
-      return new Response(body.byteLength ? body : null, { status: response.status, headers })
+      return diagnoseConnection(new Response(body.byteLength ? body : null, { status: response.status, headers }), 'mcp')
     } finally { await server.close() }
-  } catch (error) { return mcpAuthError(error) }
+  } catch (error) { return diagnoseConnection(mcpAuthError(error), 'mcp', error) }
 }
 export async function GET(request: Request) {
   try { await mcpClient(request); return new Response(null, { status: 405, headers: { ...privateHeaders, Allow: 'POST' } }) }
-  catch (error) { return mcpAuthError(error) }
+  catch (error) { return diagnoseConnection(mcpAuthError(error), 'mcp', error) }
 }

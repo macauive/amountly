@@ -26,11 +26,9 @@ services:
         sync: false
       - key: AMOUNTLY_APP_ORIGIN
         sync: false
-      - key: SMTP_FROM
+      - key: RESEND_FROM
         sync: false
-      - key: SMTP_USERNAME
-        sync: false
-      - key: SMTP_PASSWORD
+      - key: RESEND_API_KEY
         sync: false
       - key: OPENAI_API_KEY
         sync: false

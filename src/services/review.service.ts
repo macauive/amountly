@@ -11,7 +11,7 @@ export class RecordSaveError extends Error {
 }
 
 export function recordError(code?: string): RecordSaveError {
-  const rejected = !!code && (/^(22|23|42)/.test(code) || code === 'PT409')
+  const rejected = !!code && (/^(22|23|42)/.test(code) || code === 'PT409' || code === 'REQUEST_REJECTED')
   return new RecordSaveError(code === 'PT409' || code === '23505' ? 'This record changed or may be a duplicate. Reload and review before retrying.'
     : code === '42501' ? 'You do not have permission to change this record.'
       : rejected ? 'Check the fields and current status before trying again.'

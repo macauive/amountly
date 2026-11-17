@@ -54,6 +54,31 @@ Images can be zoomed, and PDFs are rendered to a bounded canvas with page contro
 
 `ops/render/capture-drafts.sql` is an additive, idempotent private-schema migration for the Render backend. It was applied to the intended production `amountly_db` database on October 12, 2026, after the fresh recovery export restored successfully and the migration preserved all 55 existing table digests. The owner-only API stores original bytes and typed proposals, checks active-account RLS, limits each owner to ten captures, serializes admission, and rejects stale revisions. File reads require the same revision as their metadata. Repeating an identical save recovers a lost response. The draft is removed only after a confirmed expense save or an explicit discard confirmation. Existing financial save permissions, receipt review and optimistic versions remain authoritative.
 
+The forward migration `ops/render/receipt-storage-quota.sql` must be applied as
+the schema owner after both private storage tables exist and before releasing
+the corresponding upload handlers. It has not been applied to production by
+the security-fix task. Uploads fail closed until the expected triggers exist.
+The triggers share a 250 MiB / 1,000 original-file budget per owner and a
+1 GiB / 10,000 original-file service budget across saved receipts and private
+capture originals. They update private counters atomically on insert, replace
+and delete; client roles cannot alter counters or disable triggers. Existing
+originals and financial records are preserved, including owners already above
+a budget. Reads and size-neutral metadata updates remain available; additional
+allocation is denied with HTTP 413. Reapplying the migration rebuilds accounting
+under table locks. Completing a kept capture atomically promotes its exact original
+instead of storing a second copy, so it works at a full budget. The capture keeps
+an owner-bound reference to that original until the expense save is confirmed;
+retries and reopening after an unsuccessful save preserve the original.
+Deployment operators should review these conservative limits
+against database headroom before separately authorizing a release.
+
+Focused local regression commands:
+
+```sh
+node --test tests/receipt-storage-quota.test.cjs tests/capture-drafts.test.cjs
+node --test tests/integration-admission.test.cjs tests/chatgpt-codex.test.cjs
+```
+
 `node --test tests/record-search.test.cjs tests/capture-drafts.test.cjs` covers filter/link validation plus real disposable PostgreSQL draft ownership, update conflicts, concurrent capacity, exact-original retrieval, malformed uploads and cancellation. The database test creates its own private Unix-socket cluster and never accepts a deployed database URL.
 
 For a sample preview, run `node tests/improvements-preview.cjs` from an isolated copy without environment files. It binds only to `127.0.0.1:4174`, renders the actual Next UI, uses synthetic financial records and extraction responses, and stores drafts through the actual draft handler in a disposable PostgreSQL cluster. Auth identity and financial command responses are simulated; this is not production-authentication, provider-accuracy or deployment verification. No email or external financial service is called.

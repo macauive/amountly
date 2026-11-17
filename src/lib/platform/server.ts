@@ -11,7 +11,7 @@ export function validateOrigin(headers: Headers, mutating = false, allowNavigati
   const navigation = allowNavigation && !mutating && !origin
     && headers.get('sec-fetch-mode') === 'navigate' && headers.get('sec-fetch-dest') === 'document'
   if ((origin && origin !== appOrigin()) || (headers.get('sec-fetch-site') === 'cross-site' && !navigation)
-    || (mutating && !origin && !headers.has('authorization'))) throw new AiHttpError(403, 'Request not allowed')
+    || (mutating && !origin)) throw new AiHttpError(403, 'Request not allowed')
 }
 
 export async function requireIdentity(headers: Headers, allowNavigation = false) {

@@ -239,7 +239,7 @@ function EmployeeDialog({ open, employee, orgId, userId, onClose, onSave }: Empl
               placeholder="75000"
             />
           </div>
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <Label>Pay Frequency</Label>
             <Select value={form.pay_frequency} onValueChange={(v) => set('pay_frequency', v as PayFrequency)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
@@ -250,7 +250,7 @@ function EmployeeDialog({ open, employee, orgId, userId, onClose, onSave }: Empl
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <Label>Tax Filing Status</Label>
             <Select value={form.tax_filing_status} onValueChange={(v) => set('tax_filing_status', v)}>
               <SelectTrigger><SelectValue /></SelectTrigger>

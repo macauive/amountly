@@ -1,12 +1,26 @@
+import 'next/dist/server/node-environment'
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { Pool } from 'pg'
 import nodemailer from 'nodemailer'
+import { AfterContext } from 'next/dist/server/after/after-context'
+import { AfterRunner } from 'next/dist/server/after/run-with-after'
+import { workAsyncStorage, type WorkStore } from 'next/dist/server/app-render/work-async-storage.external'
+import { workUnitAsyncStorage, type RequestStore } from 'next/dist/server/app-render/work-unit-async-storage.external'
+import { authCodeLength } from '../src/lib/platform/otp-code'
 import { POST as handle } from '../src/app/api/auth/[...all]/route'
 import { authPool } from '../src/lib/platform/auth'
 
 const url = new URL(process.env.RENDER_TEST_ADMIN_URL ?? '')
-assert.equal(url.hostname,'127.0.0.1'); assert.equal(url.port,'54399'); assert.equal(url.pathname,'/render_rehearsal')
+const lab = url.port === '55479' && url.pathname === '/amountly_security'
+assert.equal(url.hostname,'127.0.0.1')
+assert.ok(lab || (url.port === '54399' && url.pathname === '/render_rehearsal'))
+const runtimeUrl = new URL(process.env.AUTH_DATABASE_URL ?? '')
+assert.equal(runtimeUrl.hostname, url.hostname)
+assert.equal(runtimeUrl.port, url.port)
+assert.equal(runtimeUrl.pathname, url.pathname)
+const app = lab ? 'http://127.0.0.1:4178' : 'http://127.0.0.1:4191'
+assert.equal(process.env.AMOUNTLY_APP_ORIGIN, app)
 const owner = new Pool({connectionString:url.href,max:1})
 const email = `auth-rehearsal-${randomUUID()}@example.invalid`
 const password = randomBytes(24).toString('hex'), replacement = randomBytes(24).toString('hex')
@@ -14,16 +28,23 @@ let code = '', cookie = '', userId: string | undefined
 // In-process transport replacement: this suite cannot send any real email.
 const originalTransport = nodemailer.createTransport
 nodemailer.createTransport = (() => ({ sendMail: async (message: {text:string;to:string}) => {
-  assert.equal(message.to,email); code = message.text.match(/code is (\d{6})/)![1]
+  assert.equal(message.to,email); code = message.text.match(new RegExp(`code is ([0-9]{${authCodeLength}})`))![1]
 }, close() {} })) as unknown as typeof nodemailer.createTransport
-async function call(path:string, body?:object, origin='http://127.0.0.1:4191') {
-  return handle(new Request('http://127.0.0.1:4191/api/auth/'+path,{method:body?'POST':'GET',headers:{Origin:origin,Cookie:cookie,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}),{params:Promise.resolve({all:path.split('/')})})
+async function call(path:string, body?:object, origin=app) {
+  const runner = new AfterRunner()
+  const work = { afterContext: new AfterContext(runner.context) } as WorkStore
+  const phase = { type: 'request', phase: 'action' } as RequestStore
+  const result = await workAsyncStorage.run(work, () => workUnitAsyncStorage.run(phase, () =>
+    handle(new Request(app+'/api/auth/'+path,{method:body?'POST':'GET',headers:{Origin:origin,Cookie:cookie,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}),{params:Promise.resolve({all:path.split('/')})})))
+  await runner.executeAfter()
+  return result
 }
 async function main() {
-  process.env.SMTP_FROM='sender@example.invalid';process.env.SMTP_USERNAME='sender@example.invalid';process.env.SMTP_PASSWORD=randomBytes(32).toString('hex')
+  process.env.RESEND_FROM='sender@example.invalid';process.env.RESEND_API_KEY=randomBytes(32).toString('hex')
   assert.equal((await call('sign-up/email',{email,password,name:'Synthetic auth test'},'https://evil.example')).status,403)
   const signup = await call('sign-up/email',{email,password,name:'Synthetic auth test'})
   assert.equal(signup.status,200)
+  cookie = signup.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
   userId = (await signup.json()).user.id
   assert.ok(code)
   const stored = await owner.query('select value from amountly_auth.verification where identifier like $1',['%'+email+'%'])

@@ -4,40 +4,46 @@ const {randomBytes,createHash}=require('node:crypto')
 const {betterAuth,getAuthTables}=require('better-auth')
 const {memoryAdapter}=require('better-auth/adapters/memory')
 const {oauthProvider,getOAuthProviderApi}=require('@better-auth/oauth-provider')
-const {cimd}=require('@better-auth/cimd')
 const loadApp=require('./load-app.cjs')
 const origin='https://amountly.example', resource=origin+'/mcp'
-const stable='https://chatgpt.com/oauth/codex/client.json'
-const scoped='https://chatgpt.com/oauth/codex/synthetic-id/client.json'
-const chatgpt='https://chatgpt.com/oauth/client.json'
-
-test('actual OAuth provider resolves Codex metadata, exchanges PKCE codes, records grants and rotates tokens',async()=>{
-  const store={}, grants=[], fetched=[]
+test('actual DCR provider supports Codex native PKCE, grant attribution and rotating-token quotas',async()=>{
+  const store={}, grants=[], quotas=[], agedGrants=new Set(), counts=new Map()
   let auth
+  class BoundaryError extends Error {constructor(status,message){super(message);this.status=status}}
   const overrides={
     '@/lib/platform/auth':{getAuth:()=>auth,authPool:()=>({query:async(sql,values)=>{
       if(sql.startsWith('select is_active')) return {rows:[{is_active:true}]}
+      if(sql.includes('select v.value')) {
+        const verification=store.verification.find(row=>row.identifier===values[0])
+        const grant=grants.find(row=>row[0]===values[0])
+        return {rows:verification&&grant?[{value:verification.value,user_id:grant[1]}]:[]}
+      }
+      if(sql.includes('as "grantActive"') && sql.includes('"oauthRefreshToken"')) {
+        const token=store.oauthRefreshToken.find(row=>row.token===values[0]&&row.clientId===values[1]&&!row.revoked&&row.expiresAt>new Date())
+        return {rows:token?[{grantActive:!agedGrants.has(token.authorizationCodeId),sessionActive:true,accountActive:true}]:[]}
+      }
+      if(sql.includes('select t."userId"')) {
+        const table=sql.includes('"oauthRefreshToken"')?'oauthRefreshToken':'oauthAccessToken'
+        return {rows:store[table].filter(row=>row.token===values[0]&&row.clientId===values[1]&&!row.revoked
+          && !(sql.includes('g.granted_at>')&&agedGrants.has(row.authorizationCodeId))).map(row=>({userId:row.userId,sessionId:row.sessionId}))}
+      }
+      if(sql.includes('select u.id')) return {rows:store.user.filter(row=>row.id===values[0]&&row.emailVerified).map(row=>({id:row.id}))}
       assert.match(sql,/insert into amountly_auth.mcp_grants/);grants.push(values);return {rows:[]}
     }})},
-    '@/lib/platform/server':{validateOrigin:()=>{},requireIdentity:async()=>{}},
-    '@/lib/chatgpt/auth':{privateHeaders:{'Cache-Control':'private, no-store'},rateLimit:async()=>{}},
-    '@/lib/ai/server':{AiHttpError:class extends Error{constructor(status,message){super(message);this.status=status}}},
+    '@/lib/platform/server':{validateOrigin:()=>{},requireIdentity:async headers=>({id:(await auth.api.getSession({headers})).user.id})},
+    '@/lib/chatgpt/auth':{privateHeaders:{'Cache-Control':'private, no-store'},rateLimit:async (key,max)=>{
+      quotas.push(key);counts.set(key,(counts.get(key)??0)+1);if(counts.get(key)>max)throw new BoundaryError(429,'Busy')
+    }},
+    '@/lib/ai/server':{AiHttpError:BoundaryError},
   }
-  const load=loadApp(overrides,{AMOUNTLY_APP_ORIGIN:origin,NEXT_PUBLIC_BACKEND:'render',AMOUNTLY_CHATGPT:'enabled',NODE_ENV:'production'})
-  const config=load('src/lib/chatgpt/config.ts'), redirect=load('src/lib/chatgpt/redirect.ts')
+  const load=loadApp(overrides,{AMOUNTLY_APP_ORIGIN:origin,NEXT_PUBLIC_BACKEND:'render',AMOUNTLY_CHATGPT:'enabled',AMOUNTLY_CHATGPT_DCR:'enabled',NODE_ENV:'production'})
+  const redirect=load('src/lib/chatgpt/redirect.ts')
   const provider=oauthProvider(load('src/lib/chatgpt/oauth.ts').oauthOptions())
   for(const model of Object.keys(getAuthTables({plugins:[provider]}))) store[model]=[]
   auth=betterAuth({baseURL:origin,secret:randomBytes(32).toString('hex'),database:memoryAdapter(store),
-    trustedOrigins:[origin],emailAndPassword:{enabled:true},logger:{disabled:true},
-    plugins:[provider,cimd({metadataProfile:'mcp-2026-07-28',isMetadataDocumentUrlAllowed:config.allowedClientDocument,
-      fetchClientMetadataResource:async input=>{
-        const clientId=new Request(input).url;assert.ok([stable,scoped,chatgpt].includes(clientId));fetched.push(clientId)
-        // Public Codex metadata shape; discovery and URI matching remain real.
-        return Response.json({client_id:clientId,client_uri:'https://chatgpt.com/codex',application_type:'native',
-          redirect_uris:clientId===stable?['http://127.0.0.1/callback','http://localhost/callback']:
-            clientId===scoped?['http://127.0.0.1/callback/synthetic-id']:['https://chatgpt.com/connector_platform_oauth_redirect'],
-          token_endpoint_auth_method:'none',grant_types:['authorization_code','refresh_token'],response_types:['code'],client_name:'Codex'})
-      }})]})
+    trustedOrigins:[origin],emailAndPassword:{enabled:true},logger:{disabled:true},advanced:{database:{generateId:'uuid'}},
+    rateLimit:{enabled:true,storage:'memory',customRules:load('src/lib/chatgpt/admission.ts').oauthRateRules},
+    plugins:[provider]})
   const password=randomBytes(24).toString('hex'), email='synthetic-codex@example.invalid'
   const signup=await auth.api.signUpEmail({body:{name:'Synthetic Codex QA',email,password}})
   await (await auth.$context).internalAdapter.updateUser(signup.user.id,{emailVerified:true})
@@ -48,8 +54,8 @@ test('actual OAuth provider resolves Codex metadata, exchanges PKCE codes, recor
   async function call(action,values,method='POST') {
     const query=method==='GET'?'?'+new URLSearchParams(values):''
     const headers=method==='GET'?{Cookie:cookie,Accept:'text/html','Sec-Fetch-Mode':'navigate'}:
-      action==='consent'?{Cookie:cookie,Origin:origin,'Content-Type':'application/json'}:{'Content-Type':'application/x-www-form-urlencoded'}
-    const body=method==='GET'?undefined:action==='consent'?JSON.stringify(values):new URLSearchParams(values).toString()
+      action==='register'?{'Content-Type':'application/json'}:action==='consent'?{Cookie:cookie,Origin:origin,'Content-Type':'application/json'}:{'Content-Type':'application/x-www-form-urlencoded'}
+    const body=method==='GET'?undefined:['register','consent'].includes(action)?JSON.stringify(values):new URLSearchParams(values).toString()
     return route[method](new Request(origin+'/api/auth/oauth2/'+action+query,{method,headers,body}),{params:Promise.resolve({action})})
   }
   async function authorize(clientId,callback) {
@@ -67,7 +73,21 @@ test('actual OAuth provider resolves Codex metadata, exchanges PKCE codes, recor
     return {code:target.searchParams.get('code'),verifier,clientId,callback}
   }
   const tokenValues=grant=>({client_id:grant.clientId,grant_type:'authorization_code',code:grant.code,code_verifier:grant.verifier,redirect_uri:grant.callback,resource})
-  for(const [clientId,callback] of [[stable,'http://127.0.0.1:64903/callback'],[stable,'http://localhost:5421/callback'],[scoped,'http://127.0.0.1:4321/callback/synthetic-id'],[chatgpt,'https://chatgpt.com/connector_platform_oauth_redirect']]) {
+  async function register(callback) {
+    const response=await call('register',{client_name:'Codex',redirect_uris:[callback],token_endpoint_auth_method:'none',
+      grant_types:['authorization_code','refresh_token'],response_types:['code'],scope:'amountly:read offline_access email'})
+    assert.equal(response.status,201)
+    return (await response.json()).client_id
+  }
+  const stable=await register('http://127.0.0.1/callback'), localhost=await register('http://localhost/callback'),
+    scoped=await register('http://127.0.0.1/callback/synthetic-id'), chatgpt=await register('https://chatgpt.com/connector_platform_oauth_redirect')
+  // Exercise the real provider's enabled limiter with no trusted peer IP. A
+  // stream of unknown refresh capabilities must not block a later valid one.
+  for(let i=0;i<125;i++) {
+    const denied=await call('token',{client_id:stable,grant_type:'refresh_token',refresh_token:'amt_rt_'+randomBytes(32).toString('base64url'),resource})
+    assert.ok([400,401].includes(denied.status),'unknown refresh returns an auth error, never a shared quota')
+  }
+  for(const [clientId,callback] of [[stable,'http://127.0.0.1:64903/callback'],[localhost,'http://localhost:5421/callback'],[scoped,'http://127.0.0.1:4321/callback/synthetic-id'],[chatgpt,'https://chatgpt.com/connector_platform_oauth_redirect']]) {
     const grant=await authorize(clientId,callback)
     assert.ok(grants.some(values=>values[0]===createHash('sha256').update(grant.code).digest('hex')),'native code has an MCP grant')
     assert.ok([400,401].includes((await call('token',{...tokenValues(grant),code_verifier:randomBytes(32).toString('base64url')})).status))
@@ -84,5 +104,28 @@ test('actual OAuth provider resolves Codex metadata, exchanges PKCE codes, recor
     assert.equal(refreshed.status,200);assert.notEqual((await refreshed.json()).refresh_token,tokens.refresh_token)
     assert.ok([400,401].includes((await call('token',tokenValues(fresh))).status),'code replay rejected')
   }
-  assert.ok(fetched.includes(stable));assert.ok(fetched.includes(scoped));assert.ok(fetched.includes(chatgpt))
+  assert.ok(quotas.includes('oauth:token:user:'+signup.user.id),'real bound code/refresh credentials debit their owner')
+  assert.ok(quotas.filter(key=>key!=='oauth:register').every(key=>key.endsWith(signup.user.id)),'no anonymous/global durable quota')
+
+  const grant=await authorize(stable,'http://127.0.0.1:64903/callback')
+  let tokens=await (await call('token',tokenValues(grant))).json()
+  agedGrants.add(createHash('sha256').update(grant.code).digest('hex'))
+  counts.set('oauth:token:user:'+signup.user.id,0)
+  const expired=await call('token',{client_id:stable,grant_type:'refresh_token',refresh_token:tokens.refresh_token,resource})
+  assert.equal(expired.status,400)
+  assert.equal((await expired.json()).error,'invalid_grant')
+  agedGrants.clear()
+  counts.set('oauth:token:user:'+signup.user.id,0)
+  for(let i=0;i<120;i++) {
+    const response=await call('token',{client_id:stable,grant_type:'refresh_token',refresh_token:tokens.refresh_token,resource})
+    assert.equal(response.status,200,'active rotating refresh stays usable within owner quota')
+    tokens=await response.json()
+  }
+  assert.equal((await call('token',{client_id:stable,grant_type:'refresh_token',refresh_token:tokens.refresh_token,resource})).status,429,'rotating refresh still debits its owner')
+  counts.set('oauth:revoke:user:'+signup.user.id,120)
+  for(const token of [tokens.refresh_token,'  '+tokens.refresh_token+'  ','bEaReR '+tokens.refresh_token,'DPoP '+tokens.refresh_token]) {
+    assert.equal((await call('revoke',{client_id:stable,token})).status,429,'provider-equivalent token syntax cannot bypass quota')
+  }
+  counts.set('oauth:revoke:user:'+signup.user.id,0)
+  assert.equal((await call('revoke',{client_id:stable,token:'bEaReR '+tokens.refresh_token})).status,200,'legitimate revoke still works')
 })

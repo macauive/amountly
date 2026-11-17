@@ -45,6 +45,7 @@ async function main(){
  await database.query("insert into public.expenses(id,user_id,amount,currency,category,description,merchant,expense_date,status) values($1,$2,12.5,'USD','OFFICE_SUPPLIES','UTC boundary fixture','Rehearsal boundary','2026-01-01T00:00:00Z','DRAFT')",[boundaryExpenseId,users[0]])
  const before=await moneySnapshot(),migration=await readFile('ops/render/capture-drafts.sql','utf8')
  await database.query(migration);await database.query(migration)
+ await database.query(await readFile('ops/render/receipt-storage-quota.sql','utf8'))
  assert.deepEqual(await moneySnapshot(),before,'migration preserves all existing public table rows')
  assert.equal((await api('/api/capture-drafts')).status,401)
  assert.equal((await api('/api/health')).status,200)

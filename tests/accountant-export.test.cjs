@@ -95,7 +95,7 @@ function harness(options = {}) {
     '@/lib/receipt-export': {
       withReceiptReader: async (actor, db, deadline, operation) => {
         assert.equal(db, client)
-        assert.equal(actor.id, ownerId)
+        assert.ok(actor.id === ownerId || actor.id === options.alternateId)
         assert.equal(actor.email, identity.email)
         assert.ok(Number.isFinite(deadline))
         calls.readers.push({ actor, deadline })
@@ -280,6 +280,27 @@ test('a pending packet blocks a second build and releases its process slot on bo
     assert.equal((await h.request()).code, 200)
     assert.equal(h.calls.builds.length, 2)
   }
+})
+
+test('a pending packet leaves capacity for a different authenticated user', async () => {
+  const second = { ...identity, id: uuid(2) }
+  const authenticated = user => ({ data: { user }, error: null })
+  let enter, release
+  const entered = new Promise(resolve => { enter = resolve })
+  const gate = new Promise(resolve => { release = resolve })
+  const h = harness({ alternateId: second.id, auth: [
+    authenticated(identity), authenticated(second), authenticated(second), authenticated(identity),
+  ], build: async report => {
+    if (report.ownerId === ownerId) { enter(); await gate }
+    return completed
+  } })
+  const pending = h.request()
+  await entered
+  try {
+    assert.equal((await h.request()).code, 200)
+    assert.deepEqual(h.calls.builds.map(({ report }) => report.ownerId), [ownerId, second.id])
+  } finally { release() }
+  assert.equal((await pending).code, 200)
 })
 
 test('a queued ZIP keeps the process slot until the response finishes or closes', async () => {

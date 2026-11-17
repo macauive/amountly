@@ -23,21 +23,25 @@ const originalDirectory = process.cwd()
 process.chdir(root)
 test.after(() => { workerThreads.Worker = NativeWorker; process.chdir(originalDirectory) })
 
-// Turbopack module IDs and chunk names change with a build. Discover the
-// validator by its export in the actual receipt route's registered factories.
+// Turbopack can rename internal exports. Locate the receipt route module
+// that launches the traced PDF worker, without depending on a mangled name.
 const chunks = Array.from(routeSource.matchAll(/R\.c\("([^\"]+)"\)/g), match => match[1])
-let validatorId
+const validatorIds = []
 for (const chunk of chunks) {
   const entries = require(path.join(root, '.next', chunk))
   for (let index = 1; index < entries.length; index++) {
     if (typeof entries[index] === 'function'
-      && /\["validateReceiptFile",/.test(entries[index].toString())) validatorId = entries[index - 1]
+      && entries[index].toString().includes('scripts/receipt-pdf-worker.mjs')) validatorIds.push(entries[index - 1])
   }
 }
-assert.notEqual(validatorId, undefined, 'The receipt route must contain the production validator')
+assert.equal(validatorIds.length, 1, 'The receipt route must contain exactly one PDF validator module')
 require(routePath)
 const runtime = require(path.join(root, '.next/server/chunks/[turbopack]_runtime.js'))('server/app/api/ai/receipt/route.js')
-const validator = Promise.resolve(runtime.m(validatorId).exports).then(exports => exports.validateReceiptFile)
+const validator = Promise.resolve(runtime.m(validatorIds[0]).exports).then(exports => {
+  const functions = Object.values(exports).filter(value => typeof value === 'function')
+  assert.equal(functions.length, 1, 'The PDF validator module must export one callable')
+  return functions[0]
+})
 
 // Reproduce the exact 853-byte Helvetica fixture that exposed the deployed bug.
 // Every word is synthetic; offsets and stream length are calculated explicitly.
@@ -72,7 +76,7 @@ test('bundled receipt validator launches the traced raw worker with unchanged ty
   const validate = await validator
   const pdf = textReceiptPdf()
   assert.equal(pdf.length, 853)
-  const result = await validate(pdf, 'application/pdf')
+  const result = await validate(pdf, 'application/pdf', 'synthetic-owner')
   assert.equal(result.mime, 'application/pdf')
   assert.deepEqual(result.data, pdf)
   assert.equal(launches.length, 1)
@@ -88,9 +92,10 @@ test('bundled receipt validator launches the traced raw worker with unchanged ty
 test('bundled PDF processing keeps concurrency limits and releases slots after parser failure', async () => {
   const validate = await validator
   const pdf = textReceiptPdf()
-  const pending = [validate(pdf, 'application/pdf'), validate(pdf, 'application/pdf')]
-  await assert.rejects(validate(pdf, 'application/pdf'), error => error.status === 429)
+  const pending = [validate(pdf, 'application/pdf', 'synthetic-owner'), validate(pdf, 'application/pdf', 'other-owner')]
+  await assert.rejects(validate(pdf, 'application/pdf', 'synthetic-owner'), error => error.status === 429)
+  await assert.rejects(validate(pdf, 'application/pdf', 'third-owner'), error => error.status === 429)
   await Promise.all(pending)
-  await assert.rejects(validate(Buffer.from('%PDF-1.7\nSynthetic malformed PDF\n%%EOF\n'), 'application/pdf'), error => error.status === 400)
-  assert.equal((await validate(pdf, 'application/pdf')).mime, 'application/pdf')
+  await assert.rejects(validate(Buffer.from('%PDF-1.7\nSynthetic malformed PDF\n%%EOF\n'), 'application/pdf', 'synthetic-owner'), error => error.status === 400)
+  assert.equal((await validate(pdf, 'application/pdf', 'synthetic-owner')).mime, 'application/pdf')
 })
