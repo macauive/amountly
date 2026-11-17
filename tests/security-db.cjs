@@ -38,7 +38,7 @@ async function checkOtpLimits() {
   const { reserveOtp } = require('./load-app.cjs')({}, env)('src/lib/platform/otp-limits.ts')
   try {
     const email = 'otp-database@example.invalid'
-    const admitted = await Promise.all(Array.from({ length: 12 }, () => reserveOtp(pool, email, 'verify')))
+    const admitted = await Promise.all(Array.from({ length: 12 }, () => reserveOtp(pool, email, 'signup-verify')))
     assert.equal(admitted.filter(Boolean).length, 10)
     assert.equal(await reserveOtp(pool, email, 'reset-send'), true)
     assert.equal(await reserveOtp(pool, email, 'reset-send'), false)
@@ -48,11 +48,12 @@ async function checkOtpLimits() {
     }
     sql("update amountly_auth.otp_limits set next_at=now() where operation='reset-send'")
     assert.equal(await reserveOtp(pool, email, 'reset-send'), false)
-    assert.equal(await reserveOtp(pool, email, 'verify'), false)
-    assert.equal(await reserveOtp(pool, 'otp-other@example.invalid', 'verify'), true)
+    assert.equal(await reserveOtp(pool, email, 'signup-verify'), false)
+    assert.equal(await reserveOtp(pool, email, 'reset-verify'), true)
+    assert.equal(await reserveOtp(pool, 'otp-other@example.invalid', 'signup-verify'), true)
     assert.equal(sql("select count(*) from amountly_auth.otp_limits where email_key !~ '^[a-f0-9]{64}$'"), '0')
     sql("update amountly_auth.otp_limits set expires_at=now()-interval '1 second'")
-    assert.equal(await reserveOtp(pool, email, 'verify'), true)
+    assert.equal(await reserveOtp(pool, email, 'signup-verify'), true)
     assert.equal(await reserveOtp(pool, email, 'reset-send'), true)
     denied(() => asUser(1, 'select * from amountly_auth.otp_limits'))
     console.log('PASS: persistent OTP attempt ceiling, send cooldown and budget, expiry, account separation and runtime grants')
@@ -205,6 +206,7 @@ async function main() {
         assert.equal(restored, snapshot.before, `${snapshot.table}: incremental backup recovery changed data`)
       }
       console.log(`PASS: committed-schema upgrade preserves all ${snapshots.length} public/private tables, payments, reversals, reserved time, approvals, preferences and history; old retries, remaining payments, tenant isolation and backup restore pass`)
+      checkTaxWorkspace()
       return
     }
 

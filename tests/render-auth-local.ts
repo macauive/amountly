@@ -1,3 +1,4 @@
+import 'next/dist/server/node-environment'
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { Pool } from 'pg'

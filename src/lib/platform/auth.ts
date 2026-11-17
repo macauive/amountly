@@ -74,7 +74,8 @@ function buildAuth() {
       const path = ctx.path
       const operation = path === '/email-otp/request-password-reset' ? 'reset-send'
         : path === '/email-otp/send-verification-otp' ? 'signup-send'
-        : path === '/email-otp/verify-email' || path === '/email-otp/reset-password' ? 'verify'
+        : path === '/email-otp/verify-email' ? 'signup-verify'
+        : path === '/email-otp/reset-password' ? 'reset-verify'
         : null
       if (operation && !await reserveOtp(authPool(), ctx.body.email, operation)) {
         throw APIError.from('TOO_MANY_REQUESTS', { code: 'OTP_THROTTLED', message: 'Try again later.' })

@@ -36,6 +36,7 @@ async function main() {
           [randomUUID(),user.id,user.encrypted_password,user.created_at,user.updated_at ?? user.created_at])
       }
       await connection.query(await readFile('ops/render/platform.sql','utf8'))
+      await connection.query(await readFile('ops/render/auth-otp-limits.sql','utf8'))
       await connection.query('commit')
     } catch (error) { await connection.query('rollback'); throw error } finally { connection.release() }
     // Password hashes remain private in both databases; compare without printing.

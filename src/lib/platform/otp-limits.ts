@@ -6,7 +6,8 @@ const windowSeconds = 15 * 60
 const limits = {
   'reset-send': { max: 5, cooldown: 30 },
   'signup-send': { max: 5, cooldown: 30 },
-  verify: { max: 10, cooldown: 0 },
+  'signup-verify': { max: 10, cooldown: 0 },
+  'reset-verify': { max: 10, cooldown: 0 },
 } as const
 
 export async function reserveOtp(pool: Pool, email: string, operation: keyof typeof limits) {
