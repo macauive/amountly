@@ -47,7 +47,7 @@ test('the apex sends HSTS, with explicit opt-in for HTTPS-only subdomains', asyn
     assert.equal(matching.length, 1)
     assert.equal(matching[0].source, '/:path*')
     assert.equal(matching[0].has[0].type, 'host')
-    assert.equal(matching[0].has[0].value, 'amountly.app')
+    assert.equal(matching[0].has[0].value, 'amountly\\.app')
     assert.equal(matching[0].headers[0].value, expected)
   }
 })

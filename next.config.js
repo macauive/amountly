@@ -15,7 +15,7 @@ const nextConfig = {
       : 'max-age=31536000'
     return [{
       source: '/:path*',
-      has: [{ type: 'host', value: 'amountly.app' }],
+      has: [{ type: 'host', value: 'amountly\\.app' }],
       headers: [{ key: 'Strict-Transport-Security', value: hsts }],
     }, {
       source: '/:path*',
