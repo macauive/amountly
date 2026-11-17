@@ -188,6 +188,9 @@ function VerifyPageContent() {
         <p className="text-center text-sm text-muted-foreground">
           Already verified? <Link href="/login" className="text-primary hover:underline">Back to sign in</Link>
         </p>
+        {usesRenderBackend && (
+          <Link href="/reset-password" className="text-sm text-primary hover:underline">Reset your password</Link>
+        )}
       </CardFooter>
     </Card>
   )

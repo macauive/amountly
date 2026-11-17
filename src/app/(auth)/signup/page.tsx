@@ -133,6 +133,9 @@ export default function SignUpPage() {
               Sign in
             </Link>
           </p>
+          {usesRenderBackend && error && (
+            <Link href="/reset-password" className="text-sm text-primary hover:underline">Reset your password</Link>
+          )}
         </CardFooter>
       </form>
     </Card>

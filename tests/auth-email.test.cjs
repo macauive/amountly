@@ -101,44 +101,13 @@ test('verification UI accepts the active backend code length and submits the rec
 })
 
 test('real auth routes verify signup and reset passwords with hashed single-use codes through Resend', async () => {
-  const realAuth = require('better-auth')
-  const { memoryAdapter } = require('better-auth/adapters/memory')
+  const { call, browser, messages, lastCode, store } = require('./auth-route-fixture.cjs')()
   const { randomBytes } = require('node:crypto')
-  const store = {}, messages = []
-  const origin = 'https://amountly.example'
   const email = 'auth-flow@example.invalid'
   const password = randomBytes(24).toString('hex'), replacement = randomBytes(24).toString('hex')
-  let cookie = ''
-  class Pool {
-    async query(sql, values) {
-      if (sql.includes('select disabled')) return { rows: store.user.filter(row => row.id === values[0]) }
-      assert.match(sql, /select is_active/)
-      return { rows: [{ is_active: true }] }
-    }
-  }
-  const load = loadApp({
-    'better-auth': { ...realAuth, betterAuth(options) {
-      for (const model of Object.keys(realAuth.getAuthTables(options))) store[model] = []
-      return realAuth.betterAuth({ ...options, database: memoryAdapter(store), rateLimit: { ...options.rateLimit, storage: 'memory' } })
-    } },
-    pg: { Pool },
-    nodemailer: { createTransport(options) {
-      assert.equal(options.host, 'smtp.resend.com')
-      assert.equal(options.auth.user, 'resend')
-      return { async sendMail(message) { messages.push(message) }, close() {} }
-    } },
-  }, { NEXT_PUBLIC_BACKEND: 'render', AMOUNTLY_APP_ORIGIN: origin, NODE_ENV: 'production',
-    AUTH_DATABASE_URL: 'postgresql://127.0.0.1/synthetic-auth', BETTER_AUTH_SECRET: randomBytes(32).toString('hex'),
-    RESEND_FROM: 'sender@example.invalid', RESEND_API_KEY: 'synthetic-api-key' })
-  const route = load('src/app/api/auth/[...all]/route.ts')
-  async function call(path, body) {
-    return route[body ? 'POST' : 'GET'](new Request(origin + '/api/auth/' + path, {
-      method: body ? 'POST' : 'GET', headers: { Origin: origin, Cookie: cookie, 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-    }), { params: Promise.resolve({ all: path.split('/') }) })
-  }
-  const lastCode = () => messages.at(-1).text.match(/code is (\d{6})/)[1]
-  assert.equal((await call('sign-up/email', { email, password, name: 'Synthetic auth test' })).status, 200)
+  const signup = await call('sign-up/email', { email, password, name: 'Synthetic auth test' })
+  assert.equal(signup.status, 200)
+  browser.accept(signup)
   assert.equal(messages.at(-1).subject, 'Verify your Amountly email')
   assert.equal(messages.at(-1).to, email)
   let code = lastCode()
@@ -149,8 +118,7 @@ test('real auth routes verify signup and reset passwords with hashed single-use 
   code = lastCode()
   const verified = await call('email-otp/verify-email', { email, otp: code })
   assert.equal(verified.status, 200)
-  cookie = verified.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
-  assert.ok(cookie)
+  browser.accept(verified)
   assert.equal((await verified.json()).token, undefined, 'browser never receives a session token')
   assert.equal((await (await call('get-session')).json()).user.emailVerified, true)
   assert.equal((await call('email-otp/request-password-reset', { email })).status, 200)

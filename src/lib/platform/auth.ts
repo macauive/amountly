@@ -6,11 +6,12 @@ import { Pool } from 'pg'
 import { sendAuthCode } from '@/lib/platform/auth-email'
 import { appOrigin, requiredSecret } from '@/lib/platform/config'
 import { oauthProvider, getOAuthProviderApi } from '@better-auth/oauth-provider'
-import { createAuthEndpoint } from 'better-auth/api'
+import { APIError, createAuthEndpoint } from 'better-auth/api'
 import { z } from 'zod'
 import { chatgptEnabled } from '@/lib/chatgpt/config'
 import { oauthOptions } from '@/lib/chatgpt/oauth'
 import { oauthRateRules } from '@/lib/chatgpt/admission'
+import { signupProofUser } from '@/lib/platform/signup-proof'
 
 let instance: ReturnType<typeof buildAuth> | undefined
 let pool: Pool | undefined
@@ -32,9 +33,22 @@ function buildAuth() {
       defaultCookieAttributes: { httpOnly: true, sameSite: 'lax', path: '/' } },
     emailAndPassword: { enabled: true, requireEmailVerification: true,
       minPasswordLength: 12, maxPasswordLength: 128, revokeSessionsOnPasswordReset: true,
+      // Better Auth checks for an existing normalized email, then calls this
+      // instead of returning a successful signup with a synthetic user ID.
+      customSyntheticUser: () => { throw APIError.from('CONFLICT', {
+        code: 'ACCOUNT_EXISTS', message: 'An account already exists for this email.',
+      }) },
       password: { hash: hashPassword, verify: async ({ hash, password }) =>
         /^\$2[aby]\$/.test(hash) ? compare(password, hash) : verifyPassword({ hash, password }) } },
-    emailVerification: { autoSignInAfterVerification: true },
+    emailVerification: {
+      autoSignInAfterVerification: true,
+      beforeEmailVerification: async (user, request) => {
+        const proofUser = request && await signupProofUser(request.headers, user.email)
+        if (user.emailVerified || proofUser !== user.id) {
+          throw APIError.from('BAD_REQUEST', { code: 'INVALID_OTP', message: 'Invalid verification code.' })
+        }
+      },
+    },
     session: { expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24, freshAge: 60 * 10,
       cookieCache: { enabled: false } },
     user: { deleteUser: { enabled: false }, changeEmail: { enabled: false },

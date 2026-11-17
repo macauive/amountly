@@ -24,6 +24,7 @@ async function main() {
   assert.equal((await call('sign-up/email',{email,password,name:'Synthetic auth test'},'https://evil.example')).status,403)
   const signup = await call('sign-up/email',{email,password,name:'Synthetic auth test'})
   assert.equal(signup.status,200)
+  cookie = signup.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
   userId = (await signup.json()).user.id
   assert.ok(code)
   const stored = await owner.query('select value from amountly_auth.verification where identifier like $1',['%'+email+'%'])
