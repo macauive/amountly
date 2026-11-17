@@ -118,6 +118,12 @@ async function main() {
     `)
 
 
+    assert.equal(asUser(1, "set local search_path=pg_catalog; select public.get_user_organization_id()"), id(100))
+    assert.equal(asUser(6, "set local search_path=pg_catalog; select public.get_user_organization_id() is null"), 't')
+    assert.equal(sql(`select 'search_path=""' = any(proconfig) from pg_proc
+      where oid='public.get_user_organization_id()'::regprocedure`), 't')
+    console.log('PASS: authenticated workspace lookup uses its pinned search path')
+
     const filingInsert = (user, org, row) =>
       `insert into public.tax_filings (id, user_id, organization_id, name, form_type, due_date)
         values ('${id(row)}', '${id(user)}', ${org === null ? 'null' : "'" + id(org) + "'"}, 'Synthetic filing', 'TEST', '2026-12-01')`
