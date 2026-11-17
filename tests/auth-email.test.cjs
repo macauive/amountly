@@ -104,11 +104,12 @@ test('real auth routes verify signup and reset passwords with hashed single-use 
   const realAuth = require('better-auth')
   const { memoryAdapter } = require('better-auth/adapters/memory')
   const { randomBytes } = require('node:crypto')
-  const store = {}, messages = []
-  const origin = 'https://amountly.example'
+  const store = {}, messages = [], conversionCallbacks = []
+  const origin = 'https://amountly.app'
   const email = 'auth-flow@example.invalid'
   const password = randomBytes(24).toString('hex'), replacement = randomBytes(24).toString('hex')
-  let cookie = ''
+  const attribution = '__Host-oai-ad-measurement=0f174cf3-b16f-4bc2-9deb-9e13f6f8d14b~synthetic_ad_click'
+  let cookie = attribution
   class Pool {
     async query(sql, values) {
       if (sql.includes('select disabled')) return { rows: store.user.filter(row => row.id === values[0]) }
@@ -117,6 +118,7 @@ test('real auth routes verify signup and reset passwords with hashed single-use 
     }
   }
   const load = loadApp({
+    'next/server': { after: callback => conversionCallbacks.push(callback) },
     'better-auth': { ...realAuth, betterAuth(options) {
       for (const model of Object.keys(realAuth.getAuthTables(options))) store[model] = []
       return realAuth.betterAuth({ ...options, database: memoryAdapter(store), rateLimit: { ...options.rateLimit, storage: 'memory' } })
@@ -147,12 +149,21 @@ test('real auth routes verify signup and reset passwords with hashed single-use 
   assert.equal((await call('sign-in/email', { email, password })).status, 403)
   assert.equal((await call('email-otp/send-verification-otp', { email, type: 'email-verification' })).status, 200)
   code = lastCode()
+  assert.equal(conversionCallbacks.length, 0, 'signup request and code resend do not record a conversion')
+  const invalidCode = code === '000000' ? '000001' : '000000'
+  assert.ok((await call('email-otp/verify-email', { email, otp: invalidCode })).status >= 400)
+  assert.equal(conversionCallbacks.length, 0, 'an invalid code does not record a conversion')
   const verified = await call('email-otp/verify-email', { email, otp: code })
   assert.equal(verified.status, 200)
   cookie = verified.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
   assert.ok(cookie)
+  cookie += '; ' + attribution
+  assert.equal(conversionCallbacks.length, 1, 'first successful verification schedules one signup event')
   assert.equal((await verified.json()).token, undefined, 'browser never receives a session token')
   assert.equal((await (await call('get-session')).json()).user.emailVerified, true)
+  assert.equal((await call('email-otp/send-verification-otp', { email, type: 'email-verification' })).status, 200)
+  assert.equal((await call('email-otp/verify-email', { email, otp: lastCode() })).status, 200)
+  assert.equal(conversionCallbacks.length, 1, 'verifying an existing verified account does not record a signup')
   assert.equal((await call('email-otp/request-password-reset', { email })).status, 200)
   assert.equal(messages.at(-1).subject, 'Reset your Amountly password')
   const resetCode = lastCode()

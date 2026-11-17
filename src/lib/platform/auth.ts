@@ -20,6 +20,12 @@ export function authPool() {
     options: '-c search_path=amountly_auth,pg_catalog -c statement_timeout=10000' })
 }
 
+const firstVerifications = new WeakSet<Request>()
+
+export function completedFirstEmailVerification(request: Request) {
+  return firstVerifications.has(request)
+}
+
 function buildAuth() {
   const secret = requiredSecret('BETTER_AUTH_SECRET')
   if (secret.length < 32) throw new Error('Invalid authentication configuration')
@@ -34,7 +40,12 @@ function buildAuth() {
       minPasswordLength: 12, maxPasswordLength: 128, revokeSessionsOnPasswordReset: true,
       password: { hash: hashPassword, verify: async ({ hash, password }) =>
         /^\$2[aby]\$/.test(hash) ? compare(password, hash) : verifyPassword({ hash, password }) } },
-    emailVerification: { autoSignInAfterVerification: true },
+    emailVerification: {
+      autoSignInAfterVerification: true,
+      beforeEmailVerification: async (user, request) => {
+        if (request && !user.emailVerified) firstVerifications.add(request)
+      },
+    },
     session: { expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24, freshAge: 60 * 10,
       cookieCache: { enabled: false } },
     user: { deleteUser: { enabled: false }, changeEmail: { enabled: false },
