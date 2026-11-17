@@ -1,4 +1,6 @@
-import { authPool, getAuth } from '@/lib/platform/auth'
+import { after } from 'next/server'
+import { adMeasurementReference, reportAdConversion } from '@/lib/ad-measurement'
+import { authPool, completedFirstEmailVerification, getAuth } from '@/lib/platform/auth'
 import { usesRenderBackend } from '@/lib/platform/config'
 import { readBoundedJson } from '@/lib/http'
 import { validateOrigin } from '@/lib/platform/server'
@@ -67,7 +69,8 @@ async function handle(request: Request, context: { params: Promise<{ all: string
       }
       body = JSON.stringify(parsed.data)
     }
-    const response = await getAuth().handler(new Request(request.url, { method: request.method, headers: request.headers, body }))
+    const authRequest = new Request(request.url, { method: request.method, headers: request.headers, body })
+    const response = await getAuth().handler(authRequest)
     if (path === resetRequest) {
       if (!response.ok && response.status !== 429) console.error('Password reset request failed')
       return resetResponse()
@@ -105,6 +108,14 @@ async function handle(request: Request, context: { params: Promise<{ all: string
     if (response.ok && path === 'email-otp/verify-email') safeHeaders.append('Set-Cookie', clearSignupProof())
     for (const cookie of response.headers.getSetCookie()) safeHeaders.append('Set-Cookie', cookie)
     if (!response.ok) return Response.json({ error: 'Authentication could not be completed. Check your details and try again.', code: result?.code }, { status: response.status, headers: safeHeaders })
+    if (path === 'email-otp/verify-email' && request.headers.get('origin') === 'https://amountly.app' &&
+        completedFirstEmailVerification(authRequest) && result?.status === true && result?.user?.emailVerified === true) {
+      const reference = adMeasurementReference(request.headers.get('cookie'), request.headers.get('sec-gpc'))
+      if (reference) after(() => reportAdConversion({
+        pixelId: process.env.OPENAI_ADS_PIXEL_ID,
+        apiKey: process.env.OPENAI_ADS_CONVERSION_KEY,
+      }, reference, 'registration_completed'))
+    }
     return Response.json(result, { status: response.status, headers: safeHeaders })
   } catch (error) {
     if (resetStarted !== undefined) {

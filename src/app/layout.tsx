@@ -3,6 +3,8 @@ import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
 import { Providers } from '@/components/providers'
+import { AdMeasurementConsent } from '@/components/ad-measurement-consent'
+import { adMeasurementEnabled } from '@/lib/ad-measurement'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -33,10 +35,16 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode
 }) {
-  const nonce = (await headers()).get('x-nonce') ?? undefined
+  const requestHeaders = await headers()
+  const nonce = requestHeaders.get('x-nonce') ?? undefined
+  const measurement = requestHeaders.get('host') === 'amountly.app' && adMeasurementEnabled({
+    pixelId: process.env.OPENAI_ADS_PIXEL_ID,
+    apiKey: process.env.OPENAI_ADS_CONVERSION_KEY,
+  })
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
+        {measurement && <AdMeasurementConsent />}
         <Providers nonce={nonce}>{children}</Providers>
       </body>
     </html>

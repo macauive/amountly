@@ -101,7 +101,16 @@ test('verification UI accepts the active backend code length and submits the rec
 })
 
 test('real auth routes verify signup and reset passwords with hashed single-use codes through Resend', async () => {
-  const { call, browser, messages, lastCode, store, flush } = require('./auth-route-fixture.cjs')()
+  const conversions = []
+  const measurement = loadApp()('src/lib/ad-measurement.ts')
+  const { call, browser, messages, lastCode, store, pending, flush } = require('./auth-route-fixture.cjs')({
+    origin: 'https://amountly.app',
+    overrides: { '@/lib/ad-measurement': { ...measurement,
+      reportAdConversion: async (_settings, reference, event) => { conversions.push({ reference, event }) },
+    } },
+  })
+  const attribution = '__Host-oai-ad-measurement=0f174cf3-b16f-4bc2-9deb-9e13f6f8d14b~synthetic_ad_click'
+  browser.accept(new Response(null, { headers: { 'Set-Cookie': attribution } }))
   const { randomBytes } = require('node:crypto')
   const email = 'auth-flow@example.invalid'
   const password = randomBytes(24).toString('hex'), replacement = randomBytes(24).toString('hex')
@@ -116,9 +125,19 @@ test('real auth routes verify signup and reset passwords with hashed single-use 
   assert.equal((await call('sign-in/email', { email, password })).status, 403)
   assert.equal((await call('email-otp/send-verification-otp', { email, type: 'email-verification' })).status, 200)
   code = lastCode()
+  assert.equal(pending.length, 0, 'signup and resend schedule no conversion')
+  const invalidCode = code.replace(/^./, first => first === '0' ? '1' : '0')
+  assert.equal((await call('email-otp/verify-email', { email, otp: invalidCode })).status, 400)
+  assert.equal(pending.length, 0, 'a failed verification schedules no conversion')
   const verified = await call('email-otp/verify-email', { email, otp: code })
   assert.equal(verified.status, 200)
   browser.accept(verified)
+  assert.equal(pending.length, 1, 'the first proof-bound verification schedules one conversion')
+  await flush()
+  assert.equal(conversions[0].event, 'registration_completed')
+  assert.equal(conversions[0].reference.oppref, 'synthetic_ad_click')
+  assert.equal((await call('email-otp/verify-email', { email, otp: code })).status, 400)
+  assert.equal(pending.length, 0, 'a verification replay schedules no conversion')
   assert.equal((await verified.json()).token, undefined, 'browser never receives a session token')
   assert.equal((await (await call('get-session')).json()).user.emailVerified, true)
   assert.equal((await call('email-otp/request-password-reset', { email })).status, 200)
@@ -131,4 +150,5 @@ test('real auth routes verify signup and reset passwords with hashed single-use 
   assert.ok((await call('email-otp/reset-password', { email, otp: resetCode, password })).status >= 400, 'reset code cannot be reused')
   assert.equal((await call('sign-in/email', { email, password })).status, 401)
   assert.equal((await call('sign-in/email', { email, password: replacement })).status, 200)
+  assert.equal(conversions.length, 1, 'password recovery does not create another signup conversion')
 })

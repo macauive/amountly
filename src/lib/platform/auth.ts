@@ -24,6 +24,12 @@ export function authPool() {
     options: '-c search_path=amountly_auth,pg_catalog -c statement_timeout=10000' })
 }
 
+const firstVerifications = new WeakSet<Request>()
+
+export function completedFirstEmailVerification(request: Request) {
+  return firstVerifications.has(request)
+}
+
 function buildAuth() {
   const secret = requiredSecret('BETTER_AUTH_SECRET')
   if (secret.length < 32) throw new Error('Invalid authentication configuration')
@@ -58,9 +64,10 @@ function buildAuth() {
       autoSignInAfterVerification: true,
       beforeEmailVerification: async (user, request) => {
         const proofUser = request && await signupProofUser(request.headers, user.email)
-        if (user.emailVerified || proofUser !== user.id) {
+        if (!request || user.emailVerified || proofUser !== user.id) {
           throw APIError.from('BAD_REQUEST', { code: 'INVALID_OTP', message: 'Invalid verification code.' })
         }
+        firstVerifications.add(request)
       },
     },
     session: { expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24, freshAge: 60 * 10,
