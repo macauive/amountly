@@ -27,13 +27,24 @@ export function authPool() {
 function buildAuth() {
   const secret = requiredSecret('BETTER_AUTH_SECRET')
   if (secret.length < 32) throw new Error('Invalid authentication configuration')
+  const origin = appOrigin()
+  const secure = origin.startsWith('https:')
   const provider = chatgptEnabled() ? oauthProvider(oauthOptions()) : null
   return betterAuth({
-    appName: 'Amountly', baseURL: appOrigin(), secret, database: authPool(),
-    trustedOrigins: [appOrigin()],
-    advanced: { database: { generateId: 'uuid' }, cookiePrefix: 'amountly',
-      useSecureCookies: appOrigin().startsWith('https:'),
-      defaultCookieAttributes: { httpOnly: true, sameSite: 'lax', path: '/' } },
+    appName: 'Amountly', baseURL: origin, secret, database: authPool(),
+    trustedOrigins: [origin],
+    advanced: {
+      database: { generateId: 'uuid' }, cookiePrefix: 'amountly',
+      // Better Auth prepends __Secure- even to explicit names when enabled.
+      useSecureCookies: false,
+      defaultCookieAttributes: { secure, httpOnly: true, sameSite: 'lax', path: '/' },
+      cookies: secure ? {
+        session_token: { name: '__Host-amountly.session_token' },
+        session_data: { name: '__Host-amountly.session_data' },
+        account_data: { name: '__Host-amountly.account_data' },
+        dont_remember: { name: '__Host-amountly.dont_remember' },
+      } : undefined,
+    },
     emailAndPassword: { enabled: true, requireEmailVerification: true,
       minPasswordLength: 12, maxPasswordLength: 128, revokeSessionsOnPasswordReset: true,
       // Better Auth checks for an existing normalized email, then calls this
