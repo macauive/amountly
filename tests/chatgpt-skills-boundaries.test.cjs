@@ -34,7 +34,9 @@ test('calendar contracts distinguish leap days and actual month lengths from dat
     assert.equal(periodSchema.safeParse({ ...period, start: value }).success, false, value)
     assert.equal(periodSchema.safeParse({ ...period, end: value }).success, false, value)
   }
-  assert.equal(storedDay.parse('2024-02-29T23:30:00-05:00'), '2024-02-29')
+  assert.equal(storedDay.parse('2024-02-29'), '2024-02-29')
+  assert.equal(storedDay.parse('2024-02-29T23:30:00-05:00'), '2024-03-01')
+  assert.equal(storedDay.parse('2024-03-01T00:30:00+01:00'), '2024-02-29')
   assert.equal(storedDay.safeParse('2025-02-29T23:30:00-05:00').success, false)
 })
 

@@ -3,7 +3,8 @@ const assert = require('node:assert/strict')
 const { randomBytes } = require('node:crypto')
 const fixture = require('./auth-route-fixture.cjs')
 
-for (const flow of ['signup', 'reset']) test(`${flow} code resends preserve the account attempt budget`, async () => {
+for (const flow of ['signup', 'reset']) test(`${flow} code resends preserve the account attempt budget`, async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-01-01T00:00:00Z') })
   const attemptBudget = new Map()
   const { browser, call, lastCode, flush, store } = fixture({
     disableIpLimit: true,
@@ -21,6 +22,9 @@ for (const flow of ['signup', 'reset']) test(`${flow} code resends preserve the 
   assert.equal(signup.status, 200)
   browser.accept(signup)
   async function send() {
+    // The fixture skips send throttling. Advance through the normal cooldown
+    // so Better Auth can order the newly issued code after the previous attempt.
+    t.mock.timers.tick(30_000)
     const response = flow === 'signup'
       ? await call('email-otp/send-verification-otp', { email, type: 'email-verification' })
       : await call('email-otp/request-password-reset', { email })
