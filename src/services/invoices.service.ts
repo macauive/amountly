@@ -85,6 +85,7 @@ async function getAllPayments(invoiceId?: string): Promise<InvoicePayment[]> {
 
 function workflowError(code?: string): Error & { code?: string } {
   const messages: Record<string, string> = {
+    REQUEST_REJECTED: 'Check the invoice fields and current status. Reload before retrying.',
     'PT409': 'This record changed or the selected time is already reserved. Reload before retrying.',
     '23505': 'That invoice number or request already exists. Reload before retrying.',
     '42501': 'You do not have permission to make this change.',

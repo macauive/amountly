@@ -46,6 +46,16 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     const upstream = await fetch(`${privateDataOrigin}/${parts.join('/')}${url.search}`, {
       method: request.method, headers, body, cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000),
     })
+    if (!upstream.ok) {
+      // Do not disclose the provider's code, body, headers or individual 4xx
+      // status (e.g. a conflict versus a rejected constraint or permission).
+      void upstream.body?.cancel().catch(() => {})
+      const rejected = upstream.status >= 400 && upstream.status < 500 && upstream.status !== 408 && upstream.status !== 429
+      const status = rejected ? 400 : 503
+      if (request.method === 'HEAD') return new Response(null, { status, headers: responseHeaders })
+      return Response.json({ code: rejected ? 'REQUEST_REJECTED' : 'REQUEST_FAILED',
+        message: 'Could not complete this request.', details: null, hint: null }, { status, headers: responseHeaders })
+    }
     const outputHeaders = new Headers(responseHeaders)
     for (const name of ['content-type', 'content-range', 'preference-applied']) {
       const value = upstream.headers.get(name)
@@ -53,11 +63,6 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     }
     if (request.method === 'HEAD' || upstream.status === 204) return new Response(null, { status: upstream.status, headers: outputHeaders })
     const data = await readBoundedJson(upstream, 4 * 1024 * 1024)
-    if (!upstream.ok) {
-      const code = data && typeof data === 'object' && 'code' in data && typeof data.code === 'string'
-        && /^[A-Z0-9]{5,12}$/.test(data.code) ? data.code : 'REQUEST_FAILED'
-      return Response.json({ code, message: 'Could not complete this request.', details: null, hint: null }, { status: upstream.status, headers: outputHeaders })
-    }
     return Response.json(data, { status: upstream.status, headers: outputHeaders })
   } catch (error) {
     return Response.json({ code: 'REQUEST_FAILED', message: 'Could not complete this request.' },
