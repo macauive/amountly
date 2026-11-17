@@ -18,6 +18,8 @@ const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const asUserSql = (n, statement, commit = false) => `begin; set local role authenticated; set local "request.jwt.claims" = '${JSON.stringify({ sub: id(n), role: 'authenticated' })}'; ${statement}; ${commit ? 'commit' : 'rollback'};`
 const asUser = (n, statement, commit) => sql(asUserSql(n, statement, commit))
 const denied = (fn, code = '42501') => assert.throws(fn, error => String(error.stderr).includes(code))
+const taxWorkspaceOnly = process.argv.includes('--tax-workspace')
+const taxWorkspace = '20261117190000_tax_filings_workspace.sql'
 const upgrade = process.argv.includes('--upgrade')
 const incrementalUpgrade = process.argv.includes('--incremental-upgrade')
 assert.ok(!(upgrade && incrementalUpgrade), 'Choose one upgrade mode')
@@ -75,14 +77,14 @@ async function main() {
       create function storage.foldername(text) returns text[] language sql immutable as $$select string_to_array($1, '/')$$;
       grant usage on schema public, auth, storage to anon, authenticated, service_role;
     `)
-    await checkOtpLimits()
+    if (!taxWorkspaceOnly) await checkOtpLimits()
     const migrations = fs.readdirSync('supabase/migrations').filter(name => name.endsWith('.sql')).sort()
-    const workflowMigrations = migrations.filter(name => name >= '20260926021157')
+    const workflowMigrations = migrations.filter(name => name >= '20260926021157' && name < '20261117')
     // fcddc0f contains the first eight workflow migrations. Rehearse only the
     // subsequent migrations against real data created by those commands.
     const incrementalMigrations = workflowMigrations.filter(name => name >= '20260926044850')
     const pendingMigrations = incrementalUpgrade ? incrementalMigrations : upgrade ? workflowMigrations : []
-    for (const name of migrations.filter(name => !pendingMigrations.includes(name))) {
+    for (const name of migrations.filter(name => !pendingMigrations.includes(name) && name !== taxWorkspace)) {
       if (name.startsWith('020_')) {
         sql('grant select, insert, update, delete on all tables in schema public to authenticated; grant usage, select on all sequences in schema public to authenticated')
       }
@@ -114,6 +116,37 @@ async function main() {
         ('${id(402)}',null,'${id(6)}','${id(202)}','TEST-F',now(),now(),9,9,'DRAFT');
       insert into invoice_line_items (id,invoice_id,description,quantity,rate,amount) values ('${id(450)}','${id(400)}','Synthetic line',1,5,5);
     `)
+
+
+    const filingInsert = (user, org, row) =>
+      `insert into public.tax_filings (id, user_id, organization_id, name, form_type, due_date)
+        values ('${id(row)}', '${id(user)}', ${org === null ? 'null' : "'" + id(org) + "'"}, 'Synthetic filing', 'TEST', '2026-12-01')`
+    // The previous schema accepted both bad workspace references.
+    asUser(1, filingInsert(1, 101, 1400), true)
+    asUser(6, filingInsert(6, 999, 1401), true)
+    const filingMigration = fs.readFileSync(path.join('supabase/migrations', taxWorkspace), 'utf8')
+    // Upgrade modes need the old RPC and fixture behavior until replay ends.
+    const checkTaxWorkspace = () => {
+      sql(filingMigration)
+      sql(filingMigration)
+      assert.equal(asUser(1, `select organization_id from public.tax_filings where id='${id(1400)}'`), id(100))
+      assert.equal(asUser(6, `select organization_id is null from public.tax_filings where id='${id(1401)}'`), 't')
+      for (const org of [null, 101, 999]) denied(() => asUser(1, filingInsert(1, org, 1402)))
+      denied(() => asUser(6, filingInsert(6, 100, 1403)))
+      denied(() => asUser(8, filingInsert(8, 100, 1404)))
+      asUser(1, filingInsert(1, 100, 1402), true)
+      asUser(6, filingInsert(6, null, 1403), true)
+      asUser(8, filingInsert(8, null, 1404), true)
+      denied(() => asUser(1, `update public.tax_filings set organization_id=null where id='${id(1402)}'`))
+      asUser(1, `update public.tax_filings set name='Updated filing' where id='${id(1402)}'`, true)
+      assert.equal(asUser(5, `select count(*) from public.tax_filings where id='${id(1402)}'`), '0')
+      asUser(1, 'select public.seed_quarterly_estimates(2026)', true)
+      assert.equal(asUser(1, `select count(*) from public.tax_filings where form_type='1040-ES' and organization_id='${id(100)}'`), '4')
+      assert.equal(sql("select convalidated from pg_constraint where conrelid='public.tax_filings'::regclass and conname='tax_filings_organization_id_fkey'"), 't')
+      console.log('PASS: tax workspace migration repairs legacy references and enforces scope, immutability, RLS and quarterly seeding')
+    }
+    if (!upgrade && !incrementalUpgrade) checkTaxWorkspace()
+    if (taxWorkspaceOnly) return
 
 
     if (incrementalUpgrade) {
@@ -707,6 +740,7 @@ async function main() {
     denied(()=>sql(`set role anon; select set_own_preferences('{}')`))
     assert.equal(asUser(8,`select next_values->>'amount' from record_events where record_id='${id(901)}' and action='created'`),'30.00')
     assert.equal(sql(`select count(*) from record_events where next_values ?| array['receipt_path','receipt_url','notes','merchant']`),'0')
+    if (upgrade || incrementalUpgrade) checkTaxWorkspace()
     await Promise.all([1,2].map(()=>concurrent(path.join(bin,'psql'),[...psqlArgs,'-c',asUserSql(6,'select seed_quarterly_estimates(2026)',true)])))
     assert.equal(asUser(6,"select count(*) from tax_filings where form_type='1040-ES'"),'4')
     assert.equal(asUser(9,"select count(*) from tax_filings where form_type='1040-ES'"),'0')

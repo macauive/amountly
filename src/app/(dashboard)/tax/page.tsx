@@ -310,8 +310,6 @@ function TaxWorkspace() {
     setSaving(true)
     try {
       const input = {
-        user_id: user?.id!,
-        organization_id: user?.organization_id,
         name: formData.name,
         form_type: formData.form_type,
         tax_period_start: formData.tax_period_start,
@@ -326,7 +324,8 @@ function TaxWorkspace() {
         await updateTaxFiling(selectedFiling.id, input)
         toast.success('Filing updated')
       } else {
-        await createTaxFiling(input)
+        await createTaxFiling({ ...input, user_id: user?.id!,
+          organization_id: user?.account_type === AccountType.business ? user.organization_id ?? undefined : undefined })
         toast.success('Filing added')
       }
       setDialogOpen(false)
