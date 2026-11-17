@@ -23,21 +23,25 @@ const originalDirectory = process.cwd()
 process.chdir(root)
 test.after(() => { workerThreads.Worker = NativeWorker; process.chdir(originalDirectory) })
 
-// Turbopack module IDs and chunk names change with a build. Discover the
-// validator by its export in the actual receipt route's registered factories.
+// Turbopack can rename internal exports. Locate the receipt route module
+// that launches the traced PDF worker, without depending on a mangled name.
 const chunks = Array.from(routeSource.matchAll(/R\.c\("([^\"]+)"\)/g), match => match[1])
-let validatorId
+const validatorIds = []
 for (const chunk of chunks) {
   const entries = require(path.join(root, '.next', chunk))
   for (let index = 1; index < entries.length; index++) {
     if (typeof entries[index] === 'function'
-      && /\["validateReceiptFile",/.test(entries[index].toString())) validatorId = entries[index - 1]
+      && entries[index].toString().includes('scripts/receipt-pdf-worker.mjs')) validatorIds.push(entries[index - 1])
   }
 }
-assert.notEqual(validatorId, undefined, 'The receipt route must contain the production validator')
+assert.equal(validatorIds.length, 1, 'The receipt route must contain exactly one PDF validator module')
 require(routePath)
 const runtime = require(path.join(root, '.next/server/chunks/[turbopack]_runtime.js'))('server/app/api/ai/receipt/route.js')
-const validator = Promise.resolve(runtime.m(validatorId).exports).then(exports => exports.validateReceiptFile)
+const validator = Promise.resolve(runtime.m(validatorIds[0]).exports).then(exports => {
+  const functions = Object.values(exports).filter(value => typeof value === 'function')
+  assert.equal(functions.length, 1, 'The PDF validator module must export one callable')
+  return functions[0]
+})
 
 // Reproduce the exact 853-byte Helvetica fixture that exposed the deployed bug.
 // Every word is synthetic; offsets and stream length are calculated explicitly.
