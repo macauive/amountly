@@ -213,7 +213,7 @@ function ItemDialog({ open, item, vendors, orgId, userId, onClose, onSave }: Ite
             <Label>Category</Label>
             <Input value={form.category} onChange={(e) => set('category', e.target.value)} placeholder="e.g. Electronics" />
           </div>
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <Label>Supplier</Label>
             <Select
               value={form.supplier_id || 'none'}
@@ -287,7 +287,7 @@ function ItemDialog({ open, item, vendors, orgId, userId, onClose, onSave }: Ite
               onChange={(e) => set('reorder_quantity', e.target.value)}
             />
           </div>
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             <Label>Status</Label>
             <Select value={form.is_active ? 'active' : 'inactive'} onValueChange={(v) => set('is_active', v === 'active')}>
               <SelectTrigger><SelectValue /></SelectTrigger>

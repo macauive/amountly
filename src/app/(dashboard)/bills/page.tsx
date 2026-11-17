@@ -406,7 +406,7 @@ function PersonalBillsView() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><Label>Amount *</Label><Input type="number" step="0.01" value={formData.amount} onChange={e => setFormData({ ...formData, amount: e.target.value })} required /></div>
-                <div className="space-y-2"><Label>Category</Label>
+                <div className="flex flex-col gap-2"><Label>Category</Label>
                   <Select value={formData.category} onValueChange={v => setFormData({ ...formData, category: v as BillCategory })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>{Object.entries(billCategoryLabels).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent>
@@ -415,7 +415,7 @@ function PersonalBillsView() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><Label>Due Date *</Label><Input type="date" value={formData.due_date} onChange={e => setFormData({ ...formData, due_date: e.target.value })} required /></div>
-                <div className="space-y-2"><Label>Recurrence</Label>
+                <div className="flex flex-col gap-2"><Label>Recurrence</Label>
                   <Select value={formData.recurrence} onValueChange={v => setFormData({ ...formData, recurrence: v as BillRecurrence })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>{Object.entries(billRecurrenceLabels).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent>
@@ -912,7 +912,7 @@ function AccountsPayableView() {
             <fieldset disabled={savingBill || vendorBillAttempt.unknown} className="grid gap-4 py-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><Label>Bill Number</Label><Input value={billForm.bill_number} readOnly className="bg-muted" /></div>
-                <div className="space-y-2"><Label>Vendor *</Label>
+                <div className="flex flex-col gap-2"><Label>Vendor *</Label>
                   <Select value={billForm.vendor_id} onValueChange={v => setBillForm({ ...billForm, vendor_id: v })}>
                     <SelectTrigger><SelectValue placeholder="Select vendor" /></SelectTrigger>
                     <SelectContent>{vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}</SelectContent>
@@ -1007,7 +1007,7 @@ function AccountsPayableView() {
             <fieldset disabled={savingPO || poAttempt.unknown} className="grid gap-4 py-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><Label>PO Number</Label><Input value={poForm.po_number} readOnly className="bg-muted" /></div>
-                <div className="space-y-2"><Label>Vendor *</Label>
+                <div className="flex flex-col gap-2"><Label>Vendor *</Label>
                   <Select value={poForm.vendor_id} onValueChange={v => setPOForm({ ...poForm, vendor_id: v })}>
                     <SelectTrigger><SelectValue placeholder="Select vendor" /></SelectTrigger>
                     <SelectContent>{vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}</SelectContent>

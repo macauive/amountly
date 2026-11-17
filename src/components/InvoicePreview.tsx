@@ -25,7 +25,7 @@ export function InvoicePreview({ invoice, organization }: { invoice: Invoice; or
       <div className="overflow-x-auto"><table className="w-full text-sm text-left">
         <caption className="sr-only">Invoice line items</caption>
         <thead><tr className="border-b"><th className="py-3">Description</th><th className="px-3">Qty</th><th className="px-3 text-right">Rate</th><th className="text-right">Amount</th></tr></thead>
-        <tbody>{invoice.line_items?.map(line => <tr key={line.id} className="border-b"><td className="py-3 whitespace-pre-wrap break-words">{line.description}</td><td className="px-3">{line.quantity}</td><td className="px-3 text-right whitespace-nowrap">{money(line.rate)}</td><td className="text-right whitespace-nowrap">{money(line.amount)}</td></tr>)}</tbody>
+        <tbody>{invoice.line_items?.map(line => <tr key={line.id} className="border-b"><td className="py-3 whitespace-pre-wrap wrap-break-word">{line.description}</td><td className="px-3">{line.quantity}</td><td className="px-3 text-right whitespace-nowrap">{money(line.rate)}</td><td className="text-right whitespace-nowrap">{money(line.amount)}</td></tr>)}</tbody>
       </table></div>
       <dl className="ml-auto max-w-xs space-y-2">
         <div className="flex justify-between gap-4"><dt>Subtotal</dt><dd>{money(invoice.subtotal)}</dd></div>
@@ -35,7 +35,7 @@ export function InvoicePreview({ invoice, organization }: { invoice: Invoice; or
         <div className="flex justify-between gap-4 font-semibold border-t pt-2"><dt>Balance due</dt><dd>{summary.balance}</dd></div>
       </dl>
       {summary.legacyPaid && <p className="text-sm">Marked paid in historical records. Payment details are unavailable.</p>}
-      {invoice.notes && <section><h4 className="font-semibold">Notes</h4><p className="whitespace-pre-wrap break-words">{invoice.notes}</p></section>}
+      {invoice.notes && <section><h4 className="font-semibold">Notes</h4><p className="whitespace-pre-wrap wrap-break-word">{invoice.notes}</p></section>}
     </article>
   )
 }

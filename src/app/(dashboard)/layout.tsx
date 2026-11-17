@@ -206,7 +206,7 @@ export default function DashboardLayout({
       </Sheet>
       {/* Main content */}
       <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
-        <header className="h-14 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 shrink-0">
+        <header className="h-14 border-b bg-background/95 backdrop-blur-sm supports-backdrop-filter:bg-background/60 shrink-0">
           <div className="flex h-full items-center gap-4 px-4">
             <Button
               variant="ghost"

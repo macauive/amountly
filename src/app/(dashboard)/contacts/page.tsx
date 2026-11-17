@@ -50,7 +50,7 @@ export default function ContactsPage() {
           <ul className="divide-y">
             {visible.map(row => (
               <li className="flex flex-wrap justify-between gap-3 py-3" key={row.contact_key}>
-                <div className="min-w-0 break-words">
+                <div className="min-w-0 wrap-break-word">
                   <p className="font-medium">{row.name}</p>
                   <p className="text-sm text-muted-foreground">{row.email || row.phone || 'No contact details'}</p>
                 </div>

@@ -455,7 +455,7 @@ export default function TimeEntriesPage() {
                   </div>
                 </div>
               )}
-              <div className="space-y-2">
+              <div className="flex flex-col gap-2">
                 <Label htmlFor="project">Project</Label>
                 <Select
                   value={formData.project_id}

@@ -542,7 +542,7 @@ export default function SettingsPage() {
                   />
                   <p className="text-xs text-muted-foreground">Pre-filled when creating new invoices</p>
                 </div>
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label>Default Currency</Label>
                   <Select
                     value={taxPrefs.default_currency}
@@ -554,7 +554,7 @@ export default function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label>Fiscal Year Start</Label>
                   <Select
                     value={taxPrefs.fiscal_year_start}
@@ -568,7 +568,7 @@ export default function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label>Default Payment Terms</Label>
                   <Select
                     value={taxPrefs.payment_terms}
@@ -586,7 +586,7 @@ export default function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label>Date Format</Label>
                   <Select
                     value={taxPrefs.date_format}

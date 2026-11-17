@@ -314,7 +314,7 @@ export default function ProjectsPage() {
                     required
                   />
                 </div>
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label htmlFor="client">Client</Label>
                   <Select
                     value={formData.client_id}
@@ -343,7 +343,7 @@ export default function ProjectsPage() {
                 />
               </div>
               <div className="grid grid-cols-3 gap-4">
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label htmlFor="billing_model">Billing Model</Label>
                   <Select
                     value={formData.billing_model}

@@ -1247,7 +1247,7 @@ function TaxWorkspace() {
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   <Label htmlFor="form_type">Form Type *</Label>
                   <Select
                     value={formData.form_type}

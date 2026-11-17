@@ -49,7 +49,7 @@ function RecordDetail({kind,id,returnTo}:{kind:string;id:string;returnTo?:string
     <h1 className="text-2xl font-semibold">Review financial record</h1>
     {error?<p role="alert">{error}</p>:!record?<p role="status">Loading record…</p>:<div className={`grid min-w-0 gap-6 ${hasOriginal?'lg:grid-cols-2':''}`}>
       {hasOriginal&&expense&&<ReceiptDocument source={{expense}}/>}
-      <div className="min-w-0 space-y-4 rounded-xl border bg-card p-5"><h2 className="break-words text-xl font-semibold">{record.label}</h2><p className="text-sm">Recorded status: <Badge variant="secondary">{recordStatusLabel(record.status)}</Badge></p>
+      <div className="min-w-0 space-y-4 rounded-xl border bg-card p-5"><h2 className="wrap-break-word text-xl font-semibold">{record.label}</h2><p className="text-sm">Recorded status: <Badge variant="secondary">{recordStatusLabel(record.status)}</Badge></p>
         <dl className="grid grid-cols-2 gap-3 text-sm"><dt>Recorded amount</dt><dd>{record.amount.toFixed(2)} {record.currency}</dd><dt>Date</dt><dd>{record.date}</dd><dt>Record type</dt><dd>{record.kind.replace('_',' ')}</dd>{expense&&<><dt>Merchant</dt><dd>{typeof expense.merchant==='string'?expense.merchant:'Unavailable'}</dd><dt>Category</dt><dd>{expenseCategoryLabels[expense.category]??'Unavailable'}</dd></>}</dl>
         {record.receiptAttached!==undefined&&<p className="text-sm">{record.receiptAttached?'Original receipt attached':'Missing receipt: attach the original when correcting this expense.'}</p>}
         <p className="text-sm text-muted-foreground">Compare the saved fields with the original before confirming a review. Changes are made on the source record and keep its existing history.</p>

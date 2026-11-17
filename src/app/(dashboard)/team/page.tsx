@@ -414,7 +414,7 @@ function TeamWorkspace() {
                   required
                 />
               </div>
-              <div className="space-y-2">
+              <div className="flex flex-col gap-2">
                 <Label htmlFor="role">Role</Label>
                 <Select
                   value={inviteData.role}
@@ -462,7 +462,7 @@ function TeamWorkspace() {
             </DialogDescription>
           </DialogHeader>
           <div className="py-4">
-            <div className="space-y-2">
+            <div className="flex flex-col gap-2">
               <Label>Select Role</Label>
               <Select
                 value={selectedRole}
