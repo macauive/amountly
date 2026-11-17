@@ -12,6 +12,7 @@ import { z } from 'zod'
 import { chatgptEnabled } from '@/lib/chatgpt/config'
 import { oauthOptions } from '@/lib/chatgpt/oauth'
 import { oauthRateRules } from '@/lib/chatgpt/admission'
+import { authCodeLength } from '@/lib/platform/otp-code'
 import { reserveOtp } from '@/lib/platform/otp-limits'
 import { signupProofUser } from '@/lib/platform/signup-proof'
 
@@ -59,8 +60,12 @@ function buildAuth() {
     rateLimit: { enabled: true, storage: 'database', window: 60, max: 60,
       customRules: { '/sign-in/email': { window: 60, max: 5 }, '/sign-up/email': { window: 60, max: 3 }, ...oauthRateRules } },
     hooks: { before: createAuthMiddleware(async ctx => {
-      if (ctx.path !== '/email-otp/request-password-reset') return
-      if (!await reserveOtp(authPool(), ctx.body.email, 'reset-send')) {
+      const path = ctx.path
+      const operation = path === '/email-otp/request-password-reset' ? 'reset-send'
+        : path === '/email-otp/send-verification-otp' ? 'signup-send'
+        : path === '/email-otp/verify-email' || path === '/email-otp/reset-password' ? 'verify'
+        : null
+      if (operation && !await reserveOtp(authPool(), ctx.body.email, operation)) {
         throw APIError.from('TOO_MANY_REQUESTS', { code: 'OTP_THROTTLED', message: 'Try again later.' })
       }
     }) },
@@ -81,7 +86,7 @@ function buildAuth() {
       })
     },
       sendVerificationOnSignUp: true, overrideDefaultEmailVerification: true,
-      disableSignUp: true, storeOTP: 'hashed', otpLength: 6, expiresIn: 600, allowedAttempts: 3 }),
+      disableSignUp: true, storeOTP: 'hashed', otpLength: authCodeLength, expiresIn: 600, allowedAttempts: 3 }),
       ...(provider ? [provider, { id: 'amountly-protected-resource', endpoints: {
         // Server API only. The public catch-all and OAuth router never forward
         // this endpoint. Resource validation does not require the caller to

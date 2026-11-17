@@ -23,6 +23,40 @@ const incrementalUpgrade = process.argv.includes('--incremental-upgrade')
 assert.ok(!(upgrade && incrementalUpgrade), 'Choose one upgrade mode')
 let started = false
 
+async function checkOtpLimits() {
+  const { Pool } = require('pg')
+  const { randomBytes } = require('node:crypto')
+  sql('create schema amountly_auth; create role amountly_auth_runtime; grant usage on schema amountly_auth to amountly_auth_runtime')
+  const migration = fs.readFileSync('ops/render/auth-otp-limits.sql', 'utf8')
+  sql(migration)
+  sql(migration)
+  const pool = new Pool({ host: socket, user: 'amountly_test', database: 'postgres',
+    options: '-c role=amountly_auth_runtime' })
+  const env = { BETTER_AUTH_SECRET: randomBytes(32).toString('hex') }
+  const { reserveOtp } = require('./load-app.cjs')({}, env)('src/lib/platform/otp-limits.ts')
+  try {
+    const email = 'otp-database@example.invalid'
+    const admitted = await Promise.all(Array.from({ length: 12 }, () => reserveOtp(pool, email, 'verify')))
+    assert.equal(admitted.filter(Boolean).length, 10)
+    assert.equal(await reserveOtp(pool, email, 'reset-send'), true)
+    assert.equal(await reserveOtp(pool, email, 'reset-send'), false)
+    for (let count = 1; count < 5; count++) {
+      sql("update amountly_auth.otp_limits set next_at=now() where operation='reset-send'")
+      assert.equal(await reserveOtp(pool, email, 'reset-send'), true)
+    }
+    sql("update amountly_auth.otp_limits set next_at=now() where operation='reset-send'")
+    assert.equal(await reserveOtp(pool, email, 'reset-send'), false)
+    assert.equal(await reserveOtp(pool, email, 'verify'), false)
+    assert.equal(await reserveOtp(pool, 'otp-other@example.invalid', 'verify'), true)
+    assert.equal(sql("select count(*) from amountly_auth.otp_limits where email_key !~ '^[a-f0-9]{64}$'"), '0')
+    sql("update amountly_auth.otp_limits set expires_at=now()-interval '1 second'")
+    assert.equal(await reserveOtp(pool, email, 'verify'), true)
+    assert.equal(await reserveOtp(pool, email, 'reset-send'), true)
+    denied(() => asUser(1, 'select * from amountly_auth.otp_limits'))
+    console.log('PASS: persistent OTP attempt ceiling, send cooldown and budget, expiry, account separation and runtime grants')
+  } finally { await pool.end() }
+}
+
 async function main() {
   try {
     execFileSync(path.join(bin, 'initdb'), ['-D', data, '-A', 'trust', '-U', 'amountly_test', '--no-locale'], { stdio: 'pipe' })
@@ -41,6 +75,7 @@ async function main() {
       create function storage.foldername(text) returns text[] language sql immutable as $$select string_to_array($1, '/')$$;
       grant usage on schema public, auth, storage to anon, authenticated, service_role;
     `)
+    await checkOtpLimits()
     const migrations = fs.readdirSync('supabase/migrations').filter(name => name.endsWith('.sql')).sort()
     const workflowMigrations = migrations.filter(name => name >= '20260926021157')
     // fcddc0f contains the first eight workflow migrations. Rehearse only the

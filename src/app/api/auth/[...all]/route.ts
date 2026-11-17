@@ -7,6 +7,7 @@ import { z } from 'zod/v3'
 import { chatgptEnabled } from '@/lib/chatgpt/config'
 import { validateSignedQuery } from '@/lib/chatgpt/query'
 import { recordIssuedGrant } from '@/lib/chatgpt/grant'
+import { authCodeRegex } from '@/lib/platform/otp-code'
 import { clearSignupProof, signupProofCookie, signupProofUser } from '@/lib/platform/signup-proof'
 
 export const runtime = 'nodejs'
@@ -16,7 +17,7 @@ const posts = new Set(['sign-in/email', 'sign-up/email', 'sign-out', 'change-pas
   'email-otp/send-verification-otp', 'email-otp/verify-email', 'email-otp/request-password-reset', 'email-otp/reset-password'])
 const email = z.string().trim().email().max(254).toLowerCase()
 const password = z.string().min(1).max(128)
-const otp = z.string().regex(/^\d{6}$/)
+const otp = z.string().regex(authCodeRegex)
 const bodies: Record<string, z.ZodTypeAny> = {
   'sign-in/email': z.object({ email, password, oauth_query: z.string().max(4096).optional() }).strict(),
   'sign-up/email': z.object({ email, password: password.min(12), name: z.string().trim().min(2).max(120) }).strict(),
@@ -85,7 +86,12 @@ async function handle(request: Request, context: { params: Promise<{ all: string
       return Response.json({ code: 'ACCOUNT_EXISTS',
         error: 'An account already exists for this email. Sign in or reset your password.' }, { status: 409, headers })
     }
-    if (!response.ok && path === 'email-otp/verify-email' && response.status !== 429) return invalidOtp()
+    if (!response.ok && (path === 'email-otp/verify-email' || path === 'email-otp/reset-password')) {
+      return invalidOtp()
+    }
+    if (result?.code === 'OTP_THROTTLED') {
+      return Response.json({ error: 'Please wait before requesting another code.' }, { status: 429, headers })
+    }
     const safeHeaders = new Headers(headers)
     if (response.ok && signupEmail) {
       const created = await authPool().query<{ id: string }>(
@@ -105,7 +111,7 @@ async function handle(request: Request, context: { params: Promise<{ all: string
       console.error('Password reset request failed')
       return resetResponse()
     }
-    if (path === 'email-otp/verify-email' && !(error instanceof AiHttpError)) {
+    if ((path === 'email-otp/verify-email' || path === 'email-otp/reset-password') && !(error instanceof AiHttpError)) {
       console.error('Email verification request failed')
       return invalidOtp()
     }

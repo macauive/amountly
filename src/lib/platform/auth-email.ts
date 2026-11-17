@@ -2,10 +2,12 @@ import nodemailer from 'nodemailer'
 import { z } from 'zod/v3'
 import { requiredSecret } from '@/lib/platform/config'
 
+import { authCodeRegex } from '@/lib/platform/otp-code'
+
 const address = z.string().email().max(254)
 const messageSchema = z.object({
   email: address,
-  otp: z.string().regex(/^\d{6}$/),
+  otp: z.string().regex(authCodeRegex),
   type: z.enum(['email-verification', 'forget-password']),
 })
 

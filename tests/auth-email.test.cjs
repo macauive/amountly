@@ -18,7 +18,7 @@ function mailer(env = {}, fail = false) {
 test('verification and password reset use only Resend with mandatory certificate-verified TLS', async () => {
   const mail = mailer()
   for (const type of ['email-verification', 'forget-password']) {
-    await mail.send('recipient@example.invalid', '123456', type)
+    await mail.send('recipient@example.invalid', '12345678', type)
   }
   assert.equal(mail.configurations.length, 2)
   for (const configuration of mail.configurations) {
@@ -35,7 +35,7 @@ test('verification and password reset use only Resend with mandatory certificate
     assert.equal(message.from.name, 'Amountly')
     assert.equal(message.from.address, 'sender@example.invalid')
     assert.equal(message.to, 'recipient@example.invalid')
-    assert.match(message.text, /123456.*expires in 10 minutes/)
+    assert.match(message.text, /12345678.*expires in 10 minutes/)
     assert.match(message.text, /If you did not request this, ignore this email/)
   }
   assert.equal(mail.closed(), 2)
@@ -44,7 +44,7 @@ test('verification and password reset use only Resend with mandatory certificate
 test('missing Resend settings fail before connecting and never fall back to Proton', async () => {
   for (const env of [{ RESEND_FROM: '' }, { RESEND_API_KEY: '' }, { RESEND_FROM: 'bad\r\nBcc: recipient@example.invalid' }]) {
     const mail = mailer({ SMTP_FROM: 'old@example.invalid', SMTP_USERNAME: 'old', SMTP_PASSWORD: 'synthetic-old-password', ...env })
-    await assert.rejects(mail.send('recipient@example.invalid', '123456', 'email-verification'), /configuration/)
+    await assert.rejects(mail.send('recipient@example.invalid', '12345678', 'email-verification'), /configuration/)
     assert.equal(mail.configurations.length, 0)
   }
 })
@@ -52,23 +52,23 @@ test('missing Resend settings fail before connecting and never fall back to Prot
 test('invalid recipients, codes and unsupported purposes cannot reach the transport', async () => {
   const mail = mailer()
   for (const args of [
-    ['recipient@example.invalid\r\nBcc: other@example.invalid', '123456', 'email-verification'],
+    ['recipient@example.invalid\r\nBcc: other@example.invalid', '12345678', 'email-verification'],
     ['recipient@example.invalid', '12345', 'email-verification'],
-    ['recipient@example.invalid', '123456\n', 'forget-password'],
-    ['recipient@example.invalid', '123456', 'sign-in'],
+    ['recipient@example.invalid', '12345678\n', 'forget-password'],
+    ['recipient@example.invalid', '12345678', 'sign-in'],
   ]) await assert.rejects(mail.send(...args), /^Error: Invalid authentication email$/)
   assert.equal(mail.configurations.length, 0)
 })
 
 test('SMTP failure is generic and always closes the transport', async () => {
   const mail = mailer({}, true)
-  await assert.rejects(mail.send('recipient@example.invalid', '123456', 'forget-password'), /^Error: Authentication email could not be sent$/)
+  await assert.rejects(mail.send('recipient@example.invalid', '12345678', 'forget-password'), /^Error: Authentication email could not be sent$/)
   assert.equal(mail.closed(), 1)
 })
 
 test('verification UI accepts the active backend code length and submits the received code', async () => {
   const React = require('react')
-  for (const [backend, code] of [['render', '123456'], ['supabase', '12345678']]) {
+  for (const [backend, code] of [['render', '12345678'], ['supabase', '12345678']]) {
     const states = [code, 'recipient@example.invalid', null, null, false, false]
     const submitted = [], routes = []
     const load = loadApp({

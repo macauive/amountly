@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Loader2, MailCheck, RotateCw } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { authCodeLength } from '@/lib/platform/otp-code'
 import { usesRenderBackend } from '@/lib/platform/config'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,7 +13,7 @@ import { Input } from '@/components/ui/input'
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp'
 import { Label } from '@/components/ui/label'
 
-const OTP_LENGTH = usesRenderBackend ? 6 : 8
+const OTP_LENGTH = usesRenderBackend ? authCodeLength : 8
 const VERIFICATION_TYPES = ['signup', 'email', 'magiclink', 'recovery', 'invite', 'email_change'] as const
 
 type VerificationType = (typeof VERIFICATION_TYPES)[number]
@@ -166,7 +167,7 @@ function VerifyPageContent() {
             >
               <InputOTPGroup>
                 {Array.from({ length: OTP_LENGTH }, (_, index) => (
-                  <InputOTPSlot key={index} index={index} />
+                  <InputOTPSlot key={index} index={index} className="w-6 sm:w-9" />
                 ))}
               </InputOTPGroup>
             </InputOTP>
