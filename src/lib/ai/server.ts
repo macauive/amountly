@@ -8,10 +8,16 @@ export class AiHttpError extends Error {
 
 // Imported only by the server route; no privileged/service-role client is used.
 export async function authorizeAiRequest(request: Request) {
+  return (await authorizeAiActor(request)).client
+}
+
+export async function authorizeAiActor(request: Request) {
   if (process.env.NEXT_PUBLIC_BACKEND === 'render') {
-    const { serverClient, validateOrigin } = await import('@/lib/platform/server')
+    const { clientForIdentity, requireIdentity, validateOrigin } = await import('@/lib/platform/server')
     validateOrigin(request.headers, request.method !== 'GET')
-    return await serverClient(request.headers) as unknown as ReturnType<typeof createClient>
+    const identity = await requireIdentity(request.headers)
+    const client = await clientForIdentity(identity) as unknown as ReturnType<typeof createClient>
+    return { client, userId: identity.id }
   }
   const authorization = request.headers.get('authorization') ?? ''
   if (!/^Bearer [A-Za-z0-9._-]{20,8192}$/.test(authorization)) {
@@ -66,5 +72,5 @@ export async function authorizeAiRequest(request: Request) {
     .from('users').select('is_active').eq('id', data.user.id).single()
   if (profileError) throw new AiHttpError(503, 'AI is temporarily unavailable')
   if (profile?.is_active !== true) throw new AiHttpError(403, 'AI access is unavailable for this account')
-  return supabase
+  return { client: supabase, userId: data.user.id }
 }

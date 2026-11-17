@@ -7,11 +7,13 @@ import { requiredSecret, usesRenderBackend } from '@/lib/platform/config'
 import { AiHttpError } from '@/lib/ai/server'
 import { readBoundedBytes, readBoundedJson } from '@/lib/http'
 import { validateReceiptFile } from '@/lib/ai/receipt-file'
+import { limitInFlight } from '@/lib/in-flight'
 import { captureDraftSchema, captureWriteSchema } from '@/lib/capture-drafts'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 let pool: Pool | undefined
+const acquireCapture = limitInFlight(2, 4)
 const headers = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }
 const columns = 'id,revision,updated_at,payload,file_name,content_type'
 const querySchema = z.object({ id: z.string().uuid().optional(), file: z.literal('1').optional(), revision: z.string().regex(/^[1-9][0-9]{0,9}$/).refine(value=>Number(value)<=2147483647).optional() }).strict()
@@ -20,6 +22,7 @@ const normalize = (row: Record<string, unknown>) => captureDraftSchema.parse({ .
 
 async function handle(request: Request) {
   if (!usesRenderBackend) return Response.json({ error: 'Not found' }, { status: 404, headers })
+  let release: (() => void) | null = null
   let tx
   try {
     validateOrigin(request.headers, request.method !== 'GET')
@@ -33,6 +36,8 @@ async function handle(request: Request) {
     let write, contents: Buffer | null = null, fileName: string | null = null, type: string | null = null
     if (request.method === 'PUT') {
       if (!request.headers.get('content-type')?.startsWith('multipart/form-data; boundary=')) throw new AiHttpError(415, 'Expected capture form')
+      release = acquireCapture(identity.id)
+      if (!release) throw new AiHttpError(429, 'Capture is busy. Try again shortly.')
       const bytes = await readBoundedBytes(request, 10 * 1024 * 1024 + 65536)
       const form = await new Response(new Uint8Array(bytes), { headers: { 'Content-Type': request.headers.get('content-type')! } }).formData()
       if ([...form.keys()].some(key => !['metadata','file'].includes(key) || form.getAll(key).length !== 1)) throw new AiHttpError(400, 'Unexpected capture fields')
@@ -43,7 +48,7 @@ async function handle(request: Request) {
       if (file !== null) {
         if (!(file instanceof File) || !file.size || file.size > 10 * 1024 * 1024) throw new AiHttpError(413, 'Invalid receipt size')
         contents = Buffer.from(await file.arrayBuffer())
-        await validateReceiptFile(contents, file.type)
+        await validateReceiptFile(contents, file.type, identity.id)
         fileName = file.name.normalize('NFKC').replace(/[\u0000-\u001f\u007f/\\]/g, '_').slice(0, 200) || 'receipt'
         type = file.type
       }
@@ -105,7 +110,10 @@ async function handle(request: Request) {
     const quota = typeof error === 'object' && error !== null && 'code' in error && error.code === 'PT413'
     const status = quota ? 413 : error instanceof AiHttpError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : 503
     return Response.json({ error: 'Could not access this capture.' }, { status, headers })
-  } finally { tx?.release() }
+  } finally {
+    tx?.release()
+    release?.()
+  }
 }
 export const GET = handle
 export const PUT = handle

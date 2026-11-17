@@ -9,12 +9,12 @@ import { nodeHeaders, requireIdentity, serverClient, validateOrigin } from '@/li
 import { AiHttpError } from '@/lib/ai/server'
 import { loadWorkspaceReport, ReportLimitError } from '@/lib/workspace-report'
 import { accountantPacketPeriod, accountantPacketQuery, buildAccountantPacket, PacketIntegrityError, PacketLimitError } from '@/lib/accountant-packet'
+import { limitInFlight } from '@/lib/in-flight'
 import { withReceiptReader } from '@/lib/receipt-export'
 
 export const config = {api:{bodyParser:false}}
 const profileSchema = z.object({account_type:z.literal(AccountType.freelancer),role:z.nativeEnum(Role),is_active:z.literal(true),organization_id:z.null()})
-// One bounded packet at a time per application process keeps memory predictable.
-let exporting = false
+const acquireExport = limitInFlight(1, 2)
 
 async function sendPacket(response:NextApiResponse,bytes:Uint8Array) {
   let settled = false
@@ -52,7 +52,7 @@ export default async function handler(request:NextApiRequest,response:NextApiRes
   if (request.method !== 'GET') {response.setHeader('Allow','GET');return fail(405)}
   const query = accountantPacketQuery.safeParse(request.query)
   if (!query.success) return fail(400)
-  let acquired = false
+  let release: (() => void) | null = null
   try {
     const headers = nodeHeaders(request.headers)
     validateOrigin(headers)
@@ -73,8 +73,8 @@ export default async function handler(request:NextApiRequest,response:NextApiRes
       return {id:data.user.id,email:data.user.email ?? ''}
     }
     const identity = await authorized()
-    if (exporting) {response.setHeader('Retry-After','5');return fail(429)}
-    exporting = true; acquired = true
+    release = acquireExport(identity.id)
+    if (!release) {response.setHeader('Retry-After','5');return fail(429)}
     const deadline = Date.now()+45000
     const report = await loadWorkspaceReport(client,query.data,{ownerId:identity.id,period:accountantPacketPeriod(query.data),deadline})
     const result = await withReceiptReader(identity,client,deadline,reader=>buildAccountantPacket({
@@ -97,5 +97,5 @@ export default async function handler(request:NextApiRequest,response:NextApiRes
     response.removeHeader('Content-Type')
     return fail(error instanceof AiHttpError ? error.status : error instanceof ReportLimitError || error instanceof PacketLimitError ? 413
       : error instanceof z.ZodError || error instanceof PacketIntegrityError ? 422 : 503)
-  } finally { if (acquired) exporting = false }
+  } finally { release?.() }
 }

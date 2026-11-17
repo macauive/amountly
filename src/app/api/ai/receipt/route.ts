@@ -1,37 +1,40 @@
 import { Buffer } from 'node:buffer'
-import { AiHttpError, authorizeAiRequest } from '@/lib/ai/server'
+import { AiHttpError, authorizeAiActor } from '@/lib/ai/server'
 import { parseResponseOutput } from '@/lib/ai/contracts'
 import { maxReceiptFileBytes, receiptFileJsonSchema, receiptFileResultSchema, receiptMimeTypes } from '@/lib/ai/receipt-contract'
 import { validateReceiptFile } from '@/lib/ai/receipt-file'
 import { redactPersonalData } from '@/lib/ai/safety'
 import { readBoundedBytes, readBoundedJson } from '@/lib/http'
 
+import { limitInFlight } from '@/lib/in-flight'
+
 export const runtime = 'nodejs'
 export const maxDuration = 60
 const headers = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }
-let activeRequests = 0
+const acquireExtraction = limitInFlight(1, 4)
 
 export async function POST(request: Request) {
-  let acquired = false
+  let release: (() => void) | null = null
   try {
-    const client = await authorizeAiRequest(request)
+    const { client, userId } = await authorizeAiActor(request)
     // This endpoint accepts only bytes, never record IDs, URLs, paths or owners.
     if (new URL(request.url).search) throw new AiHttpError(400, 'Unexpected receipt input')
     const mime = request.headers.get('content-type') ?? ''
     if (!(receiptMimeTypes as readonly string[]).includes(mime)) {
       throw new AiHttpError(415, 'Choose a JPEG, PNG, WebP, or PDF receipt')
     }
-    if (activeRequests >= 2) throw new AiHttpError(429, 'Receipt extraction is busy. Try again shortly.')
-    activeRequests++
-    acquired = true
+    release = acquireExtraction(userId)
+    if (!release) throw new AiHttpError(429, 'Receipt extraction is busy. Try again shortly.')
     const bytes = Buffer.from(await readBoundedBytes(request, maxReceiptFileBytes))
-    const file = await validateReceiptFile(bytes, mime)
     if (request.signal.aborted) throw new AiHttpError(408, 'Receipt extraction cancelled.')
     const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) throw new AiHttpError(503, 'AI is temporarily unavailable')
     const { data: allowed, error } = await client.rpc('consume_ai_quota')
     if (error) throw new AiHttpError(503, 'AI is temporarily unavailable')
     if (allowed !== true) throw new AiHttpError(429, 'AI usage limit reached. Please try again later.')
+    if (request.signal.aborted) throw new AiHttpError(408, 'Receipt extraction cancelled.')
+
+    const file = await validateReceiptFile(bytes, mime, userId)
     if (request.signal.aborted) throw new AiHttpError(408, 'Receipt extraction cancelled.')
 
     const fileData = `data:${file.mime};base64,${file.data.toString('base64')}`
@@ -81,6 +84,6 @@ export async function POST(request: Request) {
     const message = error instanceof AiHttpError ? error.message : 'Could not read this receipt. Try another file or enter the details manually.'
     return Response.json({ error: message }, { status, headers })
   } finally {
-    if (acquired) activeRequests--
+    release?.()
   }
 }

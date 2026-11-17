@@ -5,10 +5,14 @@ import { z } from 'zod/v3'
 import { requireIdentity, validateOrigin } from '@/lib/platform/server'
 import { requiredSecret, usesRenderBackend } from '@/lib/platform/config'
 import { AiHttpError } from '@/lib/ai/server'
+import { maxReceiptFileBytes } from '@/lib/ai/receipt-contract'
+import { readBoundedBytes } from '@/lib/http'
+import { limitInFlight } from '@/lib/in-flight'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 let pool: Pool | undefined
+const acquireUpload = limitInFlight(2, 4)
 const headers = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" }
 const types: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' }
 const captureSchema = z.object({ id: z.string().uuid(), revision: z.string().regex(/^[1-9][0-9]{0,9}$/).refine(value => Number(value) <= 2147483647) })
@@ -20,6 +24,7 @@ function matches(bytes: Buffer, type: string) {
 }
 async function handle(request: Request, context: { params: Promise<{ path: string[] }> }) {
   if (!usesRenderBackend) return Response.json({ error: 'Not found' }, { status: 404, headers })
+  let release: (() => void) | null = null
   let connection
   try {
     validateOrigin(request.headers, request.method === 'PUT')
@@ -33,20 +38,9 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     const type = request.headers.get('content-type') ?? ''
     if (upload) {
       if (!types[type]) throw new AiHttpError(415, 'Unsupported receipt type')
-      const limit = 10 * 1024 * 1024
-      if (!request.body || Number(request.headers.get('content-length') ?? 0) > limit) throw new AiHttpError(413, 'Receipt too large')
-      const reader = request.body.getReader(), chunks: Uint8Array[] = []
-      let size = 0
-      try {
-        while (true) {
-          const { value, done } = await reader.read()
-          if (done) break
-          size += value.byteLength
-          if (size > limit) { await reader.cancel(); throw new AiHttpError(413, 'Receipt too large') }
-          chunks.push(value)
-        }
-      } finally { reader.releaseLock() }
-      bytes = Buffer.concat(chunks)
+      release = acquireUpload(identity.id)
+      if (!release) throw new AiHttpError(429, 'Receipt upload is busy. Try again shortly.')
+      bytes = Buffer.from(await readBoundedBytes(request, maxReceiptFileBytes))
       if (!matches(bytes, type)) throw new AiHttpError(415, 'Invalid receipt file')
     }
     pool ??= new Pool({ connectionString: requiredSecret('DATA_DATABASE_URL'), max: 2, connectionTimeoutMillis: 10000 })
@@ -85,7 +79,10 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     const quota = typeof error === 'object' && error !== null && 'code' in error && error.code === 'PT413'
     return Response.json({ error: quota ? 'Receipt storage is full. Contact support before uploading more files.' : 'Could not access this receipt.' },
       { status: quota ? 413 : error instanceof AiHttpError ? error.status : error instanceof z.ZodError ? 400 : 503, headers })
-  } finally { connection?.release() }
+  } finally {
+    connection?.release()
+    release?.()
+  }
 }
 export const PUT = handle
 export const GET = handle
